@@ -1,18 +1,23 @@
 """Season Tactics — Deep tactical profile for any team over the season."""
 
+import json
 import streamlit as st
 import pandas as pd
 from components.sidebar import render_sidebar
 from components.team_selector import team_selector
-from viz.kpi_cards import section_header, kpi_card
+from viz.kpi_cards import section_header, kpi_card, kpi_row
 from viz.charts import (
     tactical_progression_chart, formation_donut, multi_line_chart,
     grouped_bar_chart, bar_chart,
     ppda_trend_chart, dual_axis_trend_chart,
+    donut_chart, histogram,
 )
 from viz.radar import team_radar
-from data.loader import load_standings, load_team_season_stats
-from data.paths import list_team_folders
+from viz.pitch import plot_shot_map
+from viz.tables import styled_dataframe
+from data.loader import load_standings, load_team_season_stats, build_player_name_map
+from data.event_parser import extract_shots, parse_match_info
+from data.paths import list_team_folders, partidos_dir
 from processing.season_tactics import (
     compute_season_tactical_progression, load_team_season_agg,
     compute_rolling_averages,
@@ -435,3 +440,187 @@ if not goals_df.empty:
     # Add zero line
     fig.add_hline(y=0, line_dash="dash", line_color="#555", opacity=0.5)
     st.plotly_chart(fig, width="stretch")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 8  xG EXPLORER
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+section_header("xG Explorer")
+st.caption("Interactive shot analysis across the season")
+
+
+# ── Shot data loader (scans partidos/ for the selected team) ──────────────
+@st.cache_data(ttl=3600)
+def _load_team_season_shots(_league: str, _season: str, _team_id: str) -> pd.DataFrame:
+    """Load all shots from matches involving a given team."""
+    pdir = partidos_dir(_league, _season)
+    if not pdir.exists():
+        return pd.DataFrame()
+
+    all_shots = []
+    for fpath in sorted(pdir.iterdir()):
+        if fpath.suffix != ".json":
+            continue
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        info = parse_match_info(raw)
+        home_id = info["home_id"]
+        away_id = info["away_id"]
+
+        if _team_id not in (home_id, away_id):
+            continue
+
+        events = raw.get("liveData", {}).get("event", [])
+        shots = extract_shots(events)
+        if shots.empty:
+            continue
+
+        shots["match_id"] = info.get("match_id", fpath.stem)
+        shots["matchday"] = info["matchday"]
+        shots["home_team"] = info["home_team"]
+        shots["away_team"] = info["away_team"]
+        shots["date"] = info["date"]
+        all_shots.append(shots)
+
+    return pd.concat(all_shots, ignore_index=True) if all_shots else pd.DataFrame()
+
+
+with st.spinner("Loading season shot data..."):
+    season_shots = _load_team_season_shots(league, season, team_id)
+
+if not season_shots.empty:
+    # Resolve player names
+    _name_map = build_player_name_map(league, season)
+    season_shots["player_display"] = season_shots.apply(
+        lambda r: _name_map.get(r["player_id"], r["player_name"]), axis=1
+    )
+
+    # ── Filters ────────────────────────────────────────────────────────────
+    xf1, xf2, xf3, xf4 = st.columns(4)
+    with xf1:
+        xg_team_filter = st.selectbox(
+            "Team", ["All", team_name, "Opponents"], key="xg_team_t"
+        )
+    with xf2:
+        xg_outcomes = season_shots["outcome"].unique().tolist()
+        xg_outcome_filter = st.multiselect(
+            "Outcome", xg_outcomes, default=xg_outcomes, key="xg_outcome_t"
+        )
+    with xf3:
+        xg_body_parts = season_shots["body_part"].dropna().unique().tolist()
+        xg_body_filter = st.multiselect(
+            "Body Part", xg_body_parts, default=xg_body_parts, key="xg_body_t"
+        )
+    with xf4:
+        xg_minute_range = st.slider(
+            "Minute Range", 0, 95, (0, 95), key="xg_minute_t"
+        )
+
+    # Apply filters
+    xg_filtered = season_shots.copy()
+    if xg_team_filter == team_name:
+        xg_filtered = xg_filtered[xg_filtered["team_id"] == team_id]
+    elif xg_team_filter == "Opponents":
+        xg_filtered = xg_filtered[xg_filtered["team_id"] != team_id]
+    xg_filtered = xg_filtered[xg_filtered["outcome"].isin(xg_outcome_filter)]
+    xg_filtered = xg_filtered[xg_filtered["body_part"].isin(xg_body_filter)]
+    xg_filtered = xg_filtered[
+        (xg_filtered["minute"] >= xg_minute_range[0])
+        & (xg_filtered["minute"] <= xg_minute_range[1])
+    ]
+
+    # ── KPIs ───────────────────────────────────────────────────────────────
+    xg_goals = xg_filtered[xg_filtered["outcome"] == "Goal"]
+    xg_total = xg_filtered["xg"].sum()
+    xg_conv = (len(xg_goals) / len(xg_filtered) * 100) if len(xg_filtered) > 0 else 0
+    xg_diff = len(xg_goals) - xg_total
+
+    kpi_row([
+        {"label": "Total Shots", "value": len(xg_filtered)},
+        {"label": "Goals", "value": len(xg_goals)},
+        {"label": "Total xG", "value": f"{xg_total:.2f}"},
+        {"label": "Conversion %", "value": f"{xg_conv:.1f}%"},
+    ])
+    st.markdown("")
+    xk1, xk2 = st.columns(2)
+    xk1.metric("Goals − xG", f"{xg_diff:+.2f}")
+    xk2.metric(
+        "Avg xG/Shot",
+        f"{(xg_total / len(xg_filtered)):.3f}" if len(xg_filtered) > 0 else "0",
+    )
+
+    # ── Shot Map ───────────────────────────────────────────────────────────
+    st.markdown("---")
+    plot_shot_map(xg_filtered, title=f"Shots ({xg_team_filter})")
+
+    # ── Distributions ──────────────────────────────────────────────────────
+    xd1, xd2 = st.columns(2)
+    with xd1:
+        outcome_counts = xg_filtered["outcome"].value_counts()
+        fig = donut_chart(
+            outcome_counts.index.tolist(),
+            outcome_counts.values.tolist(),
+            title="Shot Outcomes",
+            colors=[MU_RED, MU_GOLD, "#888888", "#FF9800", "#42A5F5"],
+        )
+        st.plotly_chart(fig, width="stretch")
+    with xd2:
+        body_counts = xg_filtered["body_part"].value_counts()
+        fig = donut_chart(
+            body_counts.index.tolist(),
+            body_counts.values.tolist(),
+            title="Shot Type",
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    # ── xG Distribution ───────────────────────────────────────────────────
+    fig = histogram(
+        xg_filtered["xg"], title="Distribution of xG Values",
+        x_label="xG", nbins=25,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    # ── Player xG Leaderboard ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Player xG Leaderboard")
+    player_xg = xg_filtered.groupby("player_display").agg(
+        shots=("xg", "count"),
+        total_xg=("xg", "sum"),
+        goals=("outcome", lambda x: (x == "Goal").sum()),
+    ).reset_index()
+    player_xg["xg_diff"] = player_xg["goals"] - player_xg["total_xg"]
+    player_xg = player_xg.sort_values("total_xg", ascending=False)
+    player_xg.columns = ["Player", "Shots", "Total xG", "Goals", "Goals − xG"]
+    player_xg["Total xG"] = player_xg["Total xG"].round(2)
+    player_xg["Goals − xG"] = player_xg["Goals − xG"].round(2)
+    styled_dataframe(player_xg.head(20), height=500)
+
+    # ── Player Drill-Down ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Player Drill-Down")
+    xg_players = xg_filtered["player_display"].dropna().unique().tolist()
+    if xg_players:
+        xg_sel_player = st.selectbox(
+            "Select Player", sorted(xg_players), key="xg_player_t"
+        )
+        player_shots = xg_filtered[xg_filtered["player_display"] == xg_sel_player]
+
+        pd1, pd2 = st.columns([2, 1])
+        with pd1:
+            plot_shot_map(player_shots, title=f"{xg_sel_player} Shot Map")
+        with pd2:
+            st.metric("Shots", len(player_shots))
+            st.metric("Goals", len(player_shots[player_shots["outcome"] == "Goal"]))
+            st.metric("xG", f"{player_shots['xg'].sum():.2f}")
+
+        log = player_shots[["minute", "outcome", "xg", "body_part", "matchday"]].copy()
+        log.columns = ["Minute", "Outcome", "xG", "Body Part", "Matchday"]
+        log["xG"] = log["xG"].round(3)
+        styled_dataframe(log.sort_values("Minute"), height=300)
+else:
+    st.info("No shot data available. Ensure match files exist in partidos/.")
