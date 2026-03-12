@@ -67,7 +67,7 @@ def plot_shot_map(shots: pd.DataFrame, title: str = "Shot Map",
 def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
                       title: str = "Pass Network",
                       node_color: str = MU_RED) -> None:
-    """Plot a pass network with player nodes and pass edges."""
+    """Plot a pass network with directional arrows and pass count labels."""
     if nodes.empty:
         st.info("No pass network data.")
         return
@@ -76,25 +76,46 @@ def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
     fig, ax = _draw_pitch(pitch, figsize=(12, 8))
     ax.set_title(title, color="white", fontsize=14, pad=10)
 
-    # Draw edges (pass connections)
+    # Draw edges as arrows (shows pass direction)
     if not edges.empty:
         max_passes = edges["pass_count"].max()
+        top_threshold = edges["pass_count"].quantile(0.75)
+
         for _, edge in edges.iterrows():
             from_node = nodes[nodes["player_id"] == edge["from_id"]]
             to_node = nodes[nodes["player_id"] == edge["to_id"]]
             if from_node.empty or to_node.empty:
                 continue
-            width = (edge["pass_count"] / max_passes) * 5 + 0.5
-            alpha = min(edge["pass_count"] / max_passes + 0.3, 0.9)
-            pitch.lines(
-                from_node["avg_x"].values[0], from_node["avg_y"].values[0],
-                to_node["avg_x"].values[0], to_node["avg_y"].values[0],
-                lw=width, color=MU_GOLD, alpha=alpha, ax=ax, zorder=3,
+
+            fx, fy = from_node["avg_x"].values[0], from_node["avg_y"].values[0]
+            tx, ty = to_node["avg_x"].values[0], to_node["avg_y"].values[0]
+            ratio = edge["pass_count"] / max_passes
+            width = ratio * 6 + 0.5
+            alpha = min(ratio + 0.2, 0.9)
+
+            # Color gradient: faint yellow → bright gold for heavy connections
+            pitch.arrows(
+                fx, fy, tx, ty,
+                width=width, headwidth=4, headlength=3,
+                color=MU_GOLD, alpha=alpha, ax=ax, zorder=3,
             )
+
+            # Pass count label on top connections
+            if edge["pass_count"] >= top_threshold:
+                mx, my = (fx + tx) / 2, (fy + ty) / 2
+                ax.annotate(
+                    str(int(edge["pass_count"])),
+                    xy=(mx, my), ha="center", va="center",
+                    fontsize=7, fontweight="bold", color="#fff",
+                    bbox=dict(facecolor="#000", alpha=0.6,
+                              edgecolor=MU_GOLD, linewidth=0.8,
+                              pad=1.5, boxstyle="round,pad=0.2"),
+                    zorder=6,
+                )
 
     # Draw nodes (players) with glow effect
     node_sizes = nodes["total_passes"].clip(1) / nodes["total_passes"].max() * 800 + 250
-    # Glow layer (larger, semi-transparent)
+    # Glow layer
     pitch.scatter(nodes["avg_x"], nodes["avg_y"], s=node_sizes * 1.6,
                   c=node_color, alpha=0.15, ax=ax, zorder=4)
     # Main node
@@ -110,7 +131,7 @@ def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
                 str(node["shirt_number"]),
                 xy=(node["avg_x"], node["avg_y"]),
                 ha="center", va="center", fontsize=9,
-                fontweight="bold", color="white", zorder=6,
+                fontweight="bold", color="white", zorder=7,
             )
         ax.annotate(
             node.get("player_name", "")[:12],
@@ -118,6 +139,7 @@ def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
             xytext=(0, -15), textcoords="offset points",
             ha="center", fontsize=8, color="white",
             bbox=dict(facecolor="#333333", alpha=0.7, edgecolor="none", pad=1),
+            zorder=7,
         )
 
     _show_fig(fig)
@@ -224,6 +246,88 @@ def plot_formation(formation: dict, player_names: dict[str, str],
             )
 
     _show_fig(fig)
+
+
+def plot_formation_shape(formation_str: str, title: str = "",
+                         primary_color: str = MU_RED,
+                         pct: float | None = None) -> None:
+    """Draw the tactical shape of a formation on a half-pitch.
+
+    Takes a formation string like '3-4-2-1' and places abstract position
+    dots in the correct rows.  No player names needed — this is a
+    season-level overview.
+    """
+    if not formation_str or formation_str == "?":
+        st.info("No formation data.")
+        return
+
+    # Parse "3-4-2-1" → [3, 4, 2, 1]
+    try:
+        rows = [int(x) for x in formation_str.split("-")]
+    except ValueError:
+        st.info(f"Cannot parse formation: {formation_str}")
+        return
+
+    full_pitch_kwargs = dict(PITCH_KWARGS)
+    pitch = VerticalPitch(**full_pitch_kwargs)
+    fig, ax = _draw_pitch(pitch, figsize=(5, 8))
+
+    label = formation_str
+    if pct is not None:
+        label += f"  ({pct:.0f}%)"
+    ax.set_title(label if not title else title,
+                 color="white", fontsize=14, fontweight="bold", pad=10)
+
+    # Y positions for each row (GK at bottom → FWD at top)
+    # GK is always 1 player at y=8
+    n_field_rows = len(rows)
+    y_positions = np.linspace(25, 82, n_field_rows)
+
+    # Draw GK first
+    pitch.scatter(8, 50, s=500, c=primary_color, edgecolors="white",
+                  linewidth=2, ax=ax, zorder=5)
+    pitch.scatter(8, 50, s=800, c="none", edgecolors=primary_color,
+                  linewidth=2, alpha=0.5, ax=ax, zorder=4)
+    ax.annotate("GK", xy=(8, 50), ha="center", va="center",
+                fontsize=9, fontweight="bold", color="white", zorder=6)
+
+    # Draw field rows
+    row_labels = _get_row_labels(rows)
+    for i, (n_players, y) in enumerate(zip(rows, y_positions)):
+        x_positions = np.linspace(15, 85, n_players + 2)[1:-1] if n_players > 1 else [50]
+        for x in x_positions:
+            # Outer ring
+            pitch.scatter(y, x, s=500, c=primary_color, edgecolors="white",
+                          linewidth=2, ax=ax, zorder=5)
+            pitch.scatter(y, x, s=800, c="none", edgecolors=primary_color,
+                          linewidth=2, alpha=0.5, ax=ax, zorder=4)
+
+        # Row label on the right side
+        lbl = row_labels[i] if i < len(row_labels) else ""
+        ax.annotate(lbl, xy=(y, 96), ha="center", va="bottom",
+                    fontsize=8, color="#888", fontstyle="italic", zorder=2)
+
+    # Connection lines between rows (subtle structure lines)
+    all_y = [8] + list(y_positions)
+    for j in range(len(all_y) - 1):
+        ax.plot([all_y[j], all_y[j + 1]], [50, 50],
+                color="#444", linewidth=0.8, alpha=0.4, zorder=1,
+                linestyle="--")
+
+    _show_fig(fig)
+
+
+def _get_row_labels(rows: list[int]) -> list[str]:
+    """Assign tactical labels to formation rows."""
+    n = len(rows)
+    if n == 3:
+        return ["DEF", "MID", "FWD"]
+    elif n == 4:
+        return ["DEF", "DM", "AM", "FWD"]
+    elif n == 5:
+        return ["DEF", "DM", "MID", "AM", "FWD"]
+    else:
+        return ["DEF"] + ["MID"] * max(0, n - 2) + ["FWD"]
 
 
 def plot_defensive_actions(tackles: pd.DataFrame, interceptions: pd.DataFrame,

@@ -13,7 +13,7 @@ from viz.charts import (
     donut_chart, histogram,
 )
 from viz.radar import team_radar
-from viz.pitch import plot_shot_map
+from viz.pitch import plot_shot_map, plot_formation_shape
 from viz.tables import styled_dataframe
 from data.loader import load_standings, load_team_season_stats, build_player_name_map
 from data.event_parser import extract_shots, parse_match_info
@@ -174,33 +174,41 @@ section_header("Formation Profile")
 formations = compute_formation_usage(league, season, team_id)
 
 if formations:
-    fc1, fc2 = st.columns([1, 2])
-    with fc1:
-        fig = formation_donut(formations, title="Formation Usage")
-        st.plotly_chart(fig, width="stretch")
-    with fc2:
-        # Formation results table
-        if has_progression:
-            form_results = progression[["match_num", "opponent", "venue", "formation",
-                                         "result", "score"]].copy()
-            form_results.columns = ["#", "Opponent", "H/A", "Formation", "Result", "Score"]
-            st.dataframe(
-                form_results.style.applymap(
-                    lambda v: (
-                        "color: #4CAF50; font-weight: bold" if v == "W"
-                        else ("color: #FFC107" if v == "D"
-                              else ("color: #F44336" if v == "L" else ""))
-                    ),
-                    subset=["Result"],
-                ),
-                use_container_width=True,
-                height=350,
+    # Show up to 3 most-used formations as pitch shapes
+    top_formations = formations[:3]
+    n_forms = len(top_formations)
+    form_cols = st.columns(n_forms)
+    form_colors = [MU_RED, "#42A5F5", "#4CAF50"]
+    for i, f_data in enumerate(top_formations):
+        with form_cols[i]:
+            plot_formation_shape(
+                f_data["formation"],
+                primary_color=form_colors[i],
+                pct=f_data["pct"],
             )
-        else:
-            # Fallback: just show formation frequency table
-            form_df = pd.DataFrame(formations)
-            form_df.columns = ["Formation", "Matches", "Usage %"]
-            st.dataframe(form_df, use_container_width=True)
+            st.markdown(
+                f'<div style="text-align:center;color:#aaa;font-size:0.85rem;">'
+                f'{f_data["count"]} matches</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Formation results table below
+    if has_progression:
+        form_results = progression[["match_num", "opponent", "venue", "formation",
+                                     "result", "score"]].copy()
+        form_results.columns = ["#", "Opponent", "H/A", "Formation", "Result", "Score"]
+        st.dataframe(
+            form_results.style.applymap(
+                lambda v: (
+                    "color: #4CAF50; font-weight: bold" if v == "W"
+                    else ("color: #FFC107" if v == "D"
+                          else ("color: #F44336" if v == "L" else ""))
+                ),
+                subset=["Result"],
+            ),
+            use_container_width=True,
+            height=350,
+        )
 else:
     st.info("No formation data found. Ensure match files exist in partidos/.")
 
