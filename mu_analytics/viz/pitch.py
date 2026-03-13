@@ -172,14 +172,16 @@ def plot_heatmap(touches: pd.DataFrame, title: str = "Touch Heatmap") -> None:
 def plot_formation(formation: dict, player_names: dict[str, str],
                    title: str = "Formation",
                    primary_color: str = MU_RED) -> None:
-    """Plot starting formation with player positions on a full vertical pitch."""
+    """Plot starting formation with player positions on a full vertical pitch.
+
+    Uses the formation string (e.g. '3-4-2-1') to split players into proper
+    sub-rows instead of the crude GK/DEF/MID/FWD grouping.
+    """
     if not formation:
         st.info("No formation data available.")
         return
 
-    # Use full pitch so all rows (GK → FWD) have proper spacing
-    full_pitch_kwargs = dict(PITCH_KWARGS)
-    pitch = VerticalPitch(**full_pitch_kwargs)
+    pitch = VerticalPitch(**PITCH_KWARGS)
     fig, ax = _draw_pitch(pitch, figsize=(6, 10))
     ax.set_title(f"{title} ({formation['formation_str']})",
                  color="white", fontsize=13, pad=8)
@@ -189,65 +191,86 @@ def plot_formation(formation: dict, player_names: dict[str, str],
         _show_fig(fig)
         return
 
-    # Compute approximate positions based on row assignments
-    from collections import Counter
-    row_positions = {}
+    # Parse formation string to get sub-row sizes: "3-4-2-1" → [3, 4, 2, 1]
+    form_str = formation.get("formation_str", "")
+    try:
+        row_sizes = [int(x) for x in form_str.split("-")]
+    except (ValueError, AttributeError):
+        row_sizes = []
 
-    # Full-pitch y positions — evenly spread across 0-100 Opta range
-    row_y_map = {1: 8, 2: 30, 3: 55, 4: 78}
-    row_label_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+    # Separate GK (row 1) from field players (rows 2-4)
+    gk_players = [s for s in starters if s["position_row"] == 1]
+    field_players = [s for s in starters if s["position_row"] >= 2]
+    # Sort field players by position_row to keep DEF → MID → FWD order
+    field_players.sort(key=lambda p: p["position_row"])
 
-    for s in starters:
-        row = s["position_row"]
-        if row not in row_positions:
-            row_positions[row] = []
-        row_positions[row].append(s)
+    # Build display rows: GK + split field players per formation string
+    display_rows = []
+    if gk_players:
+        display_rows.append({"players": gk_players, "label": "GK"})
 
-    for row, players in row_positions.items():
+    if row_sizes and sum(row_sizes) == len(field_players):
+        # Formation string matches — split field players into sub-rows
+        labels = _get_row_labels(row_sizes)
+        idx = 0
+        for i, size in enumerate(row_sizes):
+            display_rows.append({
+                "players": field_players[idx:idx + size],
+                "label": labels[i],
+            })
+            idx += size
+    else:
+        # Fallback: group by position_row
+        for row_val in sorted(set(p["position_row"] for p in field_players)):
+            label = {2: "DEF", 3: "MID", 4: "FWD"}.get(row_val, "")
+            display_rows.append({
+                "players": [p for p in field_players if p["position_row"] == row_val],
+                "label": label,
+            })
+
+    # Evenly space rows from GK (y=8) to FWD (y=88)
+    n_rows = len(display_rows)
+    y_positions = [8] + list(np.linspace(25, 88, max(n_rows - 1, 1))) if n_rows > 1 else [50]
+
+    for row_idx, row_data in enumerate(display_rows):
+        players = row_data["players"]
+        label = row_data["label"]
         n = len(players)
-        y = row_y_map.get(row, 50)
-        # Wider lateral spread with comfortable padding
-        x_positions = np.linspace(12, 88, n + 2)[1:-1] if n > 1 else [50]
-
-        # Scale markers and fonts for crowded rows
-        marker_outer = 500 if n >= 5 else 600
-        marker_inner = 300 if n >= 5 else 380
-        shirt_font = 8 if n >= 5 else 10
-        name_font = 6 if n >= 5 else 7
-        name_max = 10 if n >= 5 else 14
+        y = y_positions[row_idx] if row_idx < len(y_positions) else 50
+        x_positions = np.linspace(15, 85, n + 2)[1:-1] if n > 1 else [50]
 
         for i, p in enumerate(players):
-            x = x_positions[i] if i < len(x_positions) else 50
+            x = x_positions[i]
             name = player_names.get(p["player_id"], p.get("shirt", "?"))
-            # Shorten long names: "Bruno Fernandes" → "B. Fernandes"
+            # Shorten: "Bruno Fernandes" → "B. Fernandes"
             if len(name) > 10 and " " in name:
                 parts = name.split()
                 name = f"{parts[0][0]}. {' '.join(parts[1:])}"
 
-            # Outer decorative ring
-            pitch.scatter(y, x, s=marker_outer, c="none", edgecolors=primary_color,
+            # Outer ring + filled circle
+            pitch.scatter(y, x, s=600, c="none", edgecolors=primary_color,
                           linewidth=2.5, ax=ax, zorder=4)
-            # Inner filled circle
-            pitch.scatter(y, x, s=marker_inner, c=primary_color, edgecolors="white",
+            pitch.scatter(y, x, s=380, c=primary_color, edgecolors="white",
                           linewidth=2, ax=ax, zorder=5)
+            # Shirt number centered in circle
             ax.annotate(
-                p.get("shirt", ""),
-                xy=(y, x), ha="center", va="center",
-                fontsize=shirt_font, fontweight="bold", color="white", zorder=6,
+                p.get("shirt", ""), xy=(y, x),
+                ha="center", va="center",
+                fontsize=10, fontweight="bold", color="white", zorder=6,
             )
+            # Player name below
             ax.annotate(
-                name[:name_max],
-                xy=(y, x), xytext=(0, -14), textcoords="offset points",
-                ha="center", fontsize=name_font, color="white",
+                name[:14], xy=(y, x),
+                xytext=(0, -14), textcoords="offset points",
+                ha="center", fontsize=7, color="white",
                 bbox=dict(facecolor="#222", alpha=0.8, edgecolor="none",
                           pad=1, boxstyle="round,pad=0.2"),
             )
 
-        # Position group label on the right side of each row
-        label = row_label_map.get(row, "")
+        # Row label on the left
         if label:
             ax.annotate(
-                label, xy=(104, y), ha="left", va="center",
+                label, xy=(y, -3), ha="center", va="center",
                 fontsize=8, color="#aaa", fontstyle="italic", zorder=2,
                 annotation_clip=False,
             )
