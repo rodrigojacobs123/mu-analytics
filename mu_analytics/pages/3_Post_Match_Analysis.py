@@ -13,7 +13,7 @@ from viz.pitch import (
     plot_formation, plot_defensive_actions,
     plot_progressive_passes, plot_set_piece_map,
     plot_pass_map, plot_ball_win_height, plot_dominant_actions_by_zone,
-    ZONE_ACTION_COLORS,
+    plot_goal_buildup, ZONE_ACTION_COLORS, _ORIGIN_LABELS, _ORIGIN_COLORS,
 )
 from viz.charts import xg_race_chart
 from data.loader import load_match_raw, build_player_name_map
@@ -27,6 +27,7 @@ from data.event_parser import (
 )
 from processing.xg import compute_xg_timeline, compute_match_xg
 from processing.pass_network import build_pass_network
+from processing.goal_buildup import extract_goal_buildups
 from processing.match_stats import compute_match_stats
 from processing.set_pieces import (
     compute_set_piece_stats, compute_corner_breakdown, compute_dangerous_fk_zones,
@@ -213,6 +214,64 @@ if home_changes or away_changes:
             st.caption(f"{away_team}: No formation changes")
 
 # ═══════════════════════════════════════════════════════════════════════════
+# § 2b  GOAL BUILD-UP SEQUENCES
+# ═══════════════════════════════════════════════════════════════════════════
+section_header("Goal Build-Up Sequences")
+
+buildups = extract_goal_buildups(events)
+if not buildups:
+    st.info("No goals in this match.")
+else:
+    # Filter controls
+    bu_filter_col1, bu_filter_col2 = st.columns([2, 2])
+    with bu_filter_col1:
+        team_filter = st.selectbox(
+            "Team", ["All", home_team, away_team], key="bu_team",
+        )
+    with bu_filter_col2:
+        origin_options = sorted({b["origin"] for b in buildups})
+        origin_labels = ["All"] + [_ORIGIN_LABELS.get(o, o) for o in origin_options]
+        origin_sel = st.selectbox("Origin", origin_labels, key="bu_origin")
+
+    filtered = buildups
+    if team_filter == home_team:
+        filtered = [b for b in filtered if b["team_id"] == home_id]
+    elif team_filter == away_team:
+        filtered = [b for b in filtered if b["team_id"] == away_id]
+
+    if origin_sel != "All":
+        # Map label back to key
+        rev_map = {v: k for k, v in _ORIGIN_LABELS.items()}
+        origin_key = rev_map.get(origin_sel, origin_sel)
+        filtered = [b for b in filtered if b["origin"] == origin_key]
+
+    if not filtered:
+        st.info("No goals match the selected filters.")
+    else:
+        # Summary bar
+        origin_counts = {}
+        for b in filtered:
+            lbl = _ORIGIN_LABELS.get(b["origin"], b["origin"])
+            origin_counts[lbl] = origin_counts.get(lbl, 0) + 1
+        summary_parts = [f"**{v}** {k}" for k, v in origin_counts.items()]
+        st.markdown(f"**{len(filtered)} goal(s):** " + "  ·  ".join(summary_parts))
+
+        # Render each build-up in a grid (2 per row)
+        for i in range(0, len(filtered), 2):
+            cols = st.columns(2)
+            for j, col in enumerate(cols):
+                idx = i + j
+                if idx >= len(filtered):
+                    break
+                b = filtered[idx]
+                t_color = MU_RED if b["team_id"] == MU_TEAM_ID else (
+                    "#42A5F5" if b["team_id"] == home_id else "#FF9800"
+                )
+                with col:
+                    plot_goal_buildup(b, team_color=t_color)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # § 3  POSSESSION ZONES (Territorial Analysis)
 # ═══════════════════════════════════════════════════════════════════════════
 section_header("Territorial Dominance")
@@ -296,14 +355,14 @@ st.markdown(f"""
 # ═══════════════════════════════════════════════════════════════════════════
 section_header(f"Pass Networks — {half_choice}")
 
-pn_col1, pn_col2 = st.columns(2)
-with pn_col1:
+pn_tab_home, pn_tab_away = st.tabs([f"⚽ {home_team}", f"⚽ {away_team}"])
+with pn_tab_home:
     nodes_h, edges_h = build_pass_network(events, home_id, period=period)
     h_color = MU_RED if home_id == MU_TEAM_ID else "#42A5F5"
     plot_pass_network(nodes_h, edges_h,
                       title=f"{home_team}",
                       node_color=h_color)
-with pn_col2:
+with pn_tab_away:
     nodes_a, edges_a = build_pass_network(events, away_id, period=period)
     a_color = MU_RED if away_id == MU_TEAM_ID else "#FF9800"
     plot_pass_network(nodes_a, edges_a,

@@ -6,7 +6,7 @@ import pandas as pd
 from mplsoccer import Pitch, VerticalPitch
 import streamlit as st
 
-from config import MU_RED, MU_GOLD, MU_DARK_BG
+from config import MU_RED, MU_GOLD, MU_DARK_BG, EVENT_PASS, EVENT_GOAL
 from viz.theme import PITCH_KWARGS, HALF_PITCH_KWARGS, MU_CMAP
 
 
@@ -630,5 +630,118 @@ def plot_dominant_actions_by_zone(actions: pd.DataFrame,
     if legend_elements:
         ax.legend(handles=legend_elements, loc="lower left", fontsize=8,
                   facecolor=MU_DARK_BG, edgecolor="#444", labelcolor="white")
+
+    _show_fig(fig)
+
+
+# ── Origin badge colors ─────────────────────────────────────────────────
+_ORIGIN_COLORS = {
+    "OPEN_PLAY":  "#4CAF50",
+    "CORNER":     "#FF9800",
+    "FREE_KICK":  "#9C27B0",
+    "THROW_IN":   "#00BCD4",
+    "PENALTY":    "#F44336",
+    "OWN_GOAL":   "#888888",
+}
+_ORIGIN_LABELS = {
+    "OPEN_PLAY":  "Open Play",
+    "CORNER":     "Corner",
+    "FREE_KICK":  "Free Kick",
+    "THROW_IN":   "Throw-In",
+    "PENALTY":    "Penalty",
+    "OWN_GOAL":   "Own Goal",
+}
+
+
+def plot_goal_buildup(buildup: dict, team_color: str = MU_RED) -> None:
+    """Plot a single goal build-up sequence on a half-pitch.
+
+    ``buildup`` is one dict from ``extract_goal_buildups()`` containing
+    scorer, origin, sequence (list of event rows with x/y/end_x/end_y).
+    """
+    seq = buildup.get("sequence", [])
+    if not seq:
+        return
+
+    pitch = VerticalPitch(**HALF_PITCH_KWARGS)
+    fig, ax = _draw_pitch(pitch, figsize=(8, 8))
+
+    origin = buildup["origin"]
+    scorer = buildup["scorer"]
+    minute = buildup["goal_minute"]
+    n_passes = buildup["n_passes"]
+
+    # Title
+    ax.set_title(
+        f"{scorer}  {minute}'",
+        color="white", fontsize=13, fontweight="bold", pad=12,
+    )
+
+    # Draw pass arrows in sequence
+    for i, ev in enumerate(seq):
+        ex, ey = ev["x"], ev["y"]
+        is_goal = ev["typeId"] == EVENT_GOAL
+        is_pass = ev["typeId"] == EVENT_PASS
+
+        if is_pass and ev.get("end_x") is not None:
+            alpha = 0.5 + 0.4 * (i / max(len(seq) - 1, 1))
+            pitch.arrows(
+                ex, ey, ev["end_x"], ev["end_y"],
+                color=team_color, alpha=alpha, width=2,
+                headwidth=6, headlength=4, ax=ax, zorder=3,
+            )
+            # Player name at pass origin
+            name = ev.get("player_name", "")
+            short = name.split()[-1] if " " in name else name
+            ax.annotate(
+                short, xy=(ex, ey), fontsize=7, color="white",
+                ha="center", va="bottom",
+                xytext=(0, 6), textcoords="offset points",
+                zorder=5,
+            )
+
+        # Goal marker — large star
+        if is_goal:
+            pitch.scatter(
+                ex, ey, s=600, marker="*",
+                c=MU_GOLD, edgecolors="white", linewidth=1,
+                ax=ax, zorder=6,
+            )
+            ax.annotate(
+                "GOAL", xy=(ex, ey), fontsize=8, fontweight="bold",
+                color=MU_GOLD, ha="center", va="bottom",
+                xytext=(0, 12), textcoords="offset points",
+                zorder=7,
+            )
+
+    # Non-pass, non-goal events — small dots showing touch positions
+    for ev in seq:
+        if ev["typeId"] not in (EVENT_PASS, EVENT_GOAL):
+            pitch.scatter(
+                ev["x"], ev["y"], s=40, c="white", alpha=0.5,
+                edgecolors="none", ax=ax, zorder=2,
+            )
+
+    # Origin badge (top-right of pitch)
+    badge_color = _ORIGIN_COLORS.get(origin, "#666")
+    badge_label = _ORIGIN_LABELS.get(origin, origin)
+    ax.annotate(
+        f"  {badge_label}  ",
+        xy=(98, 98), ha="right", va="top",
+        fontsize=9, fontweight="bold", color="white",
+        bbox=dict(facecolor=badge_color, alpha=0.85, edgecolor="white",
+                  linewidth=1, pad=3, boxstyle="round,pad=0.3"),
+        zorder=8,
+    )
+
+    # Pass count + duration info (bottom-left)
+    dur = buildup.get("duration_secs", 0)
+    info = f"{n_passes} passes"
+    if dur > 0:
+        info += f"  ·  {dur}s"
+    ax.annotate(
+        info, xy=(2, 2), ha="left", va="bottom",
+        fontsize=8, color="#aaa", zorder=8,
+    )
 
     _show_fig(fig)
