@@ -130,7 +130,25 @@ def extract_shots(events: list[dict], team_id: str | None = None) -> pd.DataFram
 
 def extract_passes(events: list[dict], team_id: str | None = None,
                    successful_only: bool = False) -> pd.DataFrame:
-    """Extract pass events. Optionally filter to successful passes only."""
+    """Extract pass events. Receiver inferred from next same-team event."""
+    # Build a lookup: for each successful pass, the receiver is the player
+    # in the next chronological event from the same team.
+    receiver_map: dict[str, tuple[str, str]] = {}  # event_id -> (player_id, player_name)
+    for i, e in enumerate(events):
+        if e.get("typeId") != EVENT_PASS:
+            continue
+        if int(e.get("outcome", 0)) != 1:  # only successful passes have a receiver
+            continue
+        pass_team = e.get("contestantId", "")
+        # Look ahead for the next event from the same team
+        for j in range(i + 1, min(i + 6, len(events))):
+            nxt = events[j]
+            if nxt.get("contestantId") == pass_team and nxt.get("playerId"):
+                eid = e.get("eventId", "")
+                if eid:
+                    receiver_map[eid] = (nxt["playerId"], nxt.get("playerName", ""))
+                break
+
     rows = []
     for e in events:
         if e.get("typeId") != EVENT_PASS:
@@ -144,10 +162,13 @@ def extract_passes(events: list[dict], team_id: str | None = None,
         quals = e.get("qualifier", [])
         end_x = _get_qualifier(quals, QUAL_PASS_END_X)
         end_y = _get_qualifier(quals, QUAL_PASS_END_Y)
-        receiver_id = _get_qualifier(quals, QUAL_INVOLVED_PLAYER)
+
+        eid = e.get("eventId", "")
+        recv = receiver_map.get(eid)
+        receiver_id = recv[0] if recv else None
 
         rows.append({
-            "event_id": e.get("eventId"),
+            "event_id": eid,
             "minute": int(e.get("timeMin", 0)),
             "second": int(e.get("timeSec", 0)),
             "team_id": e.get("contestantId", ""),

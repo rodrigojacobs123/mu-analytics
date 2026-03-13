@@ -81,6 +81,13 @@ def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
         max_passes = edges["pass_count"].max()
         top_threshold = edges["pass_count"].quantile(0.75)
 
+        # Ensure consistent types for player_id matching
+        nodes = nodes.copy()
+        edges = edges.copy()
+        nodes["player_id"] = nodes["player_id"].astype(str)
+        edges["from_id"] = edges["from_id"].astype(str)
+        edges["to_id"] = edges["to_id"].astype(str)
+
         for _, edge in edges.iterrows():
             from_node = nodes[nodes["player_id"] == edge["from_id"]]
             to_node = nodes[nodes["player_id"] == edge["to_id"]]
@@ -93,7 +100,7 @@ def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
             width = ratio * 6 + 0.5
             alpha = min(ratio + 0.2, 0.9)
 
-            # Color gradient: faint yellow → bright gold for heavy connections
+            # Directional arrows
             pitch.arrows(
                 fx, fy, tx, ty,
                 width=width, headwidth=4, headlength=3,
