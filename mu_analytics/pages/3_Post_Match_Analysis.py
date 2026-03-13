@@ -256,19 +256,12 @@ else:
         summary_parts = [f"**{v}** {k}" for k, v in origin_counts.items()]
         st.markdown(f"**{len(filtered)} goal(s):** " + "  ·  ".join(summary_parts))
 
-        # Render each build-up in a grid (2 per row)
-        for i in range(0, len(filtered), 2):
-            cols = st.columns(2)
-            for j, col in enumerate(cols):
-                idx = i + j
-                if idx >= len(filtered):
-                    break
-                b = filtered[idx]
-                t_color = MU_RED if b["team_id"] == MU_TEAM_ID else (
-                    "#42A5F5" if b["team_id"] == home_id else "#FF9800"
-                )
-                with col:
-                    plot_goal_buildup(b, team_color=t_color)
+        # Render each build-up — full width for clearer view
+        for b in filtered:
+            t_color = MU_RED if b["team_id"] == MU_TEAM_ID else (
+                "#42A5F5" if b["team_id"] == home_id else "#FF9800"
+            )
+            plot_goal_buildup(b, team_color=t_color)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

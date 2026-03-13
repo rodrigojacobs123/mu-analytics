@@ -654,7 +654,7 @@ _ORIGIN_LABELS = {
 
 
 def plot_goal_buildup(buildup: dict, team_color: str = MU_RED) -> None:
-    """Plot a single goal build-up sequence on a half-pitch.
+    """Plot a single goal build-up sequence on a full pitch.
 
     ``buildup`` is one dict from ``extract_goal_buildups()`` containing
     scorer, origin, sequence (list of event rows with x/y/end_x/end_y).
@@ -663,8 +663,8 @@ def plot_goal_buildup(buildup: dict, team_color: str = MU_RED) -> None:
     if not seq:
         return
 
-    pitch = VerticalPitch(**HALF_PITCH_KWARGS)
-    fig, ax = _draw_pitch(pitch, figsize=(8, 8))
+    pitch = Pitch(**PITCH_KWARGS)
+    fig, ax = _draw_pitch(pitch, figsize=(12, 8))
 
     origin = buildup["origin"]
     scorer = buildup["scorer"]
@@ -727,7 +727,7 @@ def plot_goal_buildup(buildup: dict, team_color: str = MU_RED) -> None:
     badge_label = _ORIGIN_LABELS.get(origin, origin)
     ax.annotate(
         f"  {badge_label}  ",
-        xy=(98, 98), ha="right", va="top",
+        xy=(98, 2), ha="right", va="top",
         fontsize=9, fontweight="bold", color="white",
         bbox=dict(facecolor=badge_color, alpha=0.85, edgecolor="white",
                   linewidth=1, pad=3, boxstyle="round,pad=0.3"),
@@ -740,7 +740,7 @@ def plot_goal_buildup(buildup: dict, team_color: str = MU_RED) -> None:
     if dur > 0:
         info += f"  ·  {dur}s"
     ax.annotate(
-        info, xy=(2, 2), ha="left", va="bottom",
+        info, xy=(2, 98), ha="left", va="bottom",
         fontsize=8, color="#aaa", zorder=8,
     )
 
