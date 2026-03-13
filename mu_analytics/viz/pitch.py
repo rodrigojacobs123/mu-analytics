@@ -67,89 +67,92 @@ def plot_shot_map(shots: pd.DataFrame, title: str = "Shot Map",
 def plot_pass_network(nodes: pd.DataFrame, edges: pd.DataFrame,
                       title: str = "Pass Network",
                       node_color: str = MU_RED) -> None:
-    """Plot a pass network with directional arrows and pass count labels."""
+    """Plot a pass network — clean Forza-Football style with connection lines."""
     if nodes.empty:
         st.info("No pass network data.")
         return
 
-    pitch = Pitch(**PITCH_KWARGS)
-    fig, ax = _draw_pitch(pitch, figsize=(12, 8))
-    ax.set_title(title, color="white", fontsize=14, pad=10)
-
-    # Draw edges as arrows (shows pass direction)
+    nodes = nodes.copy()
+    edges = edges.copy()
+    nodes["player_id"] = nodes["player_id"].astype(str)
     if not edges.empty:
-        max_passes = edges["pass_count"].max()
-        top_threshold = edges["pass_count"].quantile(0.75)
-
-        # Ensure consistent types for player_id matching
-        nodes = nodes.copy()
-        edges = edges.copy()
-        nodes["player_id"] = nodes["player_id"].astype(str)
         edges["from_id"] = edges["from_id"].astype(str)
         edges["to_id"] = edges["to_id"].astype(str)
 
+    # Map Opta coords to canvas space
+    # Opta: x=0 own goal → 100 opp goal, y=0 right touchline → 100 left
+    # Canvas: x-axis = horizontal width, y-axis = vertical (bottom=own goal)
+    canvas_x = (100 - nodes["avg_y"].values) / 100 * 10 + 0.5   # y→horizontal, flip
+    canvas_y = nodes["avg_x"].values / 100 * 13.5 + 0.5          # x→vertical
+    pos = dict(zip(nodes["player_id"], zip(canvas_x, canvas_y)))
+
+    fig, ax = plt.subplots(figsize=(6, 9))
+    fig.set_facecolor(MU_DARK_BG)
+    ax.set_facecolor(MU_DARK_BG)
+    ax.set_xlim(-0.5, 11.5)
+    ax.set_ylim(-0.8, 15)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title, color="white", fontsize=12, fontweight="bold", pad=10)
+
+    # Draw connection lines — width proportional to pass count
+    if not edges.empty:
+        max_passes = edges["pass_count"].max()
+        top_threshold = edges["pass_count"].quantile(0.75) if len(edges) > 3 else 0
+
         for _, edge in edges.iterrows():
-            from_node = nodes[nodes["player_id"] == edge["from_id"]]
-            to_node = nodes[nodes["player_id"] == edge["to_id"]]
-            if from_node.empty or to_node.empty:
+            fid, tid = edge["from_id"], edge["to_id"]
+            if fid not in pos or tid not in pos:
                 continue
-
-            fx, fy = from_node["avg_x"].values[0], from_node["avg_y"].values[0]
-            tx, ty = to_node["avg_x"].values[0], to_node["avg_y"].values[0]
+            fx, fy = pos[fid]
+            tx, ty = pos[tid]
             ratio = edge["pass_count"] / max_passes
-            width = ratio * 6 + 0.5
-            alpha = min(ratio + 0.2, 0.9)
+            lw = ratio * 5 + 0.5
+            alpha = min(ratio * 0.6 + 0.15, 0.85)
+            ax.plot([fx, tx], [fy, ty], color=MU_GOLD, linewidth=lw,
+                    alpha=alpha, solid_capstyle="round", zorder=2)
 
-            # Directional arrows
-            pitch.arrows(
-                fx, fy, tx, ty,
-                width=width, headwidth=4, headlength=3,
-                color=MU_GOLD, alpha=alpha, ax=ax, zorder=3,
-            )
-
-            # Pass count label on top connections
-            if edge["pass_count"] >= top_threshold:
+            # Pass count badge on strongest connections
+            if edge["pass_count"] >= top_threshold and edge["pass_count"] > 1:
                 mx, my = (fx + tx) / 2, (fy + ty) / 2
-                ax.annotate(
-                    str(int(edge["pass_count"])),
-                    xy=(mx, my), ha="center", va="center",
-                    fontsize=7, fontweight="bold", color="#fff",
-                    bbox=dict(facecolor="#000", alpha=0.6,
-                              edgecolor=MU_GOLD, linewidth=0.8,
-                              pad=1.5, boxstyle="round,pad=0.2"),
-                    zorder=6,
-                )
+                ax.text(mx, my, str(int(edge["pass_count"])),
+                        ha="center", va="center", fontsize=6,
+                        fontweight="bold", color="white",
+                        bbox=dict(facecolor="#000", alpha=0.65,
+                                  edgecolor=MU_GOLD, linewidth=0.6,
+                                  pad=1.2, boxstyle="round,pad=0.15"),
+                        zorder=6)
 
-    # Draw nodes (players) with glow effect
-    node_sizes = nodes["total_passes"].clip(1) / nodes["total_passes"].max() * 800 + 250
-    # Glow layer
-    pitch.scatter(nodes["avg_x"], nodes["avg_y"], s=node_sizes * 1.6,
-                  c=node_color, alpha=0.15, ax=ax, zorder=4)
-    # Main node
-    pitch.scatter(nodes["avg_x"], nodes["avg_y"], s=node_sizes,
-                  c=node_color, edgecolors="white", linewidth=1.5,
-                  ax=ax, zorder=5)
-
-    # Shirt numbers inside nodes + player name labels below
+    # Draw player nodes — circles with shirt numbers + last name
+    circle_r = 0.36
     has_shirt = "shirt_number" in nodes.columns
     for _, node in nodes.iterrows():
-        if has_shirt and node.get("shirt_number"):
-            ax.annotate(
-                str(node["shirt_number"]),
-                xy=(node["avg_x"], node["avg_y"]),
-                ha="center", va="center", fontsize=9,
-                fontweight="bold", color="white", zorder=7,
-            )
-        ax.annotate(
-            node.get("player_name", "")[:12],
-            xy=(node["avg_x"], node["avg_y"]),
-            xytext=(0, -15), textcoords="offset points",
-            ha="center", fontsize=8, color="white",
-            bbox=dict(facecolor="#333333", alpha=0.7, edgecolor="none", pad=1),
-            zorder=7,
-        )
+        pid = node["player_id"]
+        if pid not in pos:
+            continue
+        x, y = pos[pid]
+        shirt = str(node["shirt_number"]) if has_shirt and node.get("shirt_number") else ""
+        name = node.get("player_name", "")
+        last = name.split()[-1] if " " in name else (name or shirt)
 
-    _show_fig(fig)
+        # Glow ring
+        glow = plt.Circle((x, y), circle_r + 0.05, fc="none",
+                           ec=node_color, linewidth=1.2, alpha=0.35, zorder=3)
+        ax.add_patch(glow)
+        # Filled circle
+        circle = plt.Circle((x, y), circle_r, fc=node_color,
+                             ec="white", linewidth=1.8, zorder=4)
+        ax.add_patch(circle)
+        # Shirt number
+        ax.text(x, y, shirt, ha="center", va="center",
+                fontsize=10, fontweight="bold", color="white", zorder=5)
+        # Last name below
+        ax.text(x, y - circle_r - 0.12, last,
+                ha="center", va="top", fontsize=6.5, color="white",
+                fontweight="bold", zorder=5)
+
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
 def plot_heatmap(touches: pd.DataFrame, title: str = "Touch Heatmap") -> None:
