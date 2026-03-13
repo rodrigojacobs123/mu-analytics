@@ -172,110 +172,97 @@ def plot_heatmap(touches: pd.DataFrame, title: str = "Touch Heatmap") -> None:
 def plot_formation(formation: dict, player_names: dict[str, str],
                    title: str = "Formation",
                    primary_color: str = MU_RED) -> None:
-    """Plot starting formation with player positions on a full vertical pitch.
-
-    Uses the formation string (e.g. '3-4-2-1') to split players into proper
-    sub-rows instead of the crude GK/DEF/MID/FWD grouping.
-    """
+    """Plot starting formation — clean Forza-Football style on plain canvas."""
     if not formation:
         st.info("No formation data available.")
         return
 
-    pitch = VerticalPitch(**PITCH_KWARGS)
-    fig, ax = _draw_pitch(pitch, figsize=(6, 10))
-    ax.set_title(f"{title} ({formation['formation_str']})",
-                 color="white", fontsize=13, pad=8)
-
     starters = formation.get("starters", [])
     if not starters:
-        _show_fig(fig)
+        st.info("No formation data available.")
         return
 
-    # Parse formation string to get sub-row sizes: "3-4-2-1" → [3, 4, 2, 1]
+    # Parse formation string: "4-2-3-1" → [4, 2, 3, 1]
     form_str = formation.get("formation_str", "")
     try:
         row_sizes = [int(x) for x in form_str.split("-")]
     except (ValueError, AttributeError):
         row_sizes = []
 
-    # Separate GK (row 1) from field players (rows 2-4)
+    # Separate GK from field players
     gk_players = [s for s in starters if s["position_row"] == 1]
     field_players = [s for s in starters if s["position_row"] >= 2]
-    # Sort field players by position_row to keep DEF → MID → FWD order
     field_players.sort(key=lambda p: p["position_row"])
 
-    # Build display rows: GK + split field players per formation string
+    # Build display rows: GK + sub-rows from formation string
     display_rows = []
     if gk_players:
-        display_rows.append({"players": gk_players, "label": "GK"})
+        display_rows.append(gk_players)
 
     if row_sizes and sum(row_sizes) == len(field_players):
-        # Formation string matches — split field players into sub-rows
-        labels = _get_row_labels(row_sizes)
         idx = 0
-        for i, size in enumerate(row_sizes):
-            display_rows.append({
-                "players": field_players[idx:idx + size],
-                "label": labels[i],
-            })
+        for size in row_sizes:
+            display_rows.append(field_players[idx:idx + size])
             idx += size
     else:
-        # Fallback: group by position_row
         for row_val in sorted(set(p["position_row"] for p in field_players)):
-            label = {2: "DEF", 3: "MID", 4: "FWD"}.get(row_val, "")
-            display_rows.append({
-                "players": [p for p in field_players if p["position_row"] == row_val],
-                "label": label,
-            })
+            display_rows.append([p for p in field_players if p["position_row"] == row_val])
 
-    # Evenly space rows from GK (y=8) to FWD (y=88)
     n_rows = len(display_rows)
-    y_positions = [8] + list(np.linspace(25, 88, max(n_rows - 1, 1))) if n_rows > 1 else [50]
 
-    for row_idx, row_data in enumerate(display_rows):
-        players = row_data["players"]
-        label = row_data["label"]
+    # Clean canvas — no pitch markings
+    fig, ax = plt.subplots(figsize=(5, 10))
+    fig.set_facecolor(MU_DARK_BG)
+    ax.set_facecolor(MU_DARK_BG)
+    ax.set_xlim(-0.5, 10.5)
+    ax.set_ylim(-1.0, n_rows * 1.6 + 0.3)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(f"{title} ({form_str})",
+                 color="white", fontsize=12, fontweight="bold", pad=10)
+
+    # Draw rows bottom-to-top (GK at y=0, FWD at top)
+    row_spacing = 1.6
+    circle_r = 0.38
+    for row_idx, players in enumerate(display_rows):
+        y = row_idx * row_spacing
         n = len(players)
-        y = y_positions[row_idx] if row_idx < len(y_positions) else 50
-        x_positions = np.linspace(15, 85, n + 2)[1:-1] if n > 1 else [50]
+        # Center players horizontally: spread across x=1..9
+        if n == 1:
+            x_positions = [5.0]
+        else:
+            margin = max(1.5, 5.0 - n * 0.8)
+            x_positions = np.linspace(margin, 10 - margin, n)
 
         for i, p in enumerate(players):
             x = x_positions[i]
-            name = player_names.get(p["player_id"], p.get("shirt", "?"))
-            # Shorten: "Bruno Fernandes" → "B. Fernandes"
-            if len(name) > 10 and " " in name:
-                parts = name.split()
-                name = f"{parts[0][0]}. {' '.join(parts[1:])}"
+            shirt = p.get("shirt", "")
+            name = player_names.get(p["player_id"], "")
+            # Get last name only: "Bruno Fernandes" → "Fernandes"
+            if " " in name:
+                last = name.split()[-1]
+            else:
+                last = name or shirt
 
-            # Outer ring + filled circle
-            pitch.scatter(y, x, s=600, c="none", edgecolors=primary_color,
-                          linewidth=2.5, ax=ax, zorder=4)
-            pitch.scatter(y, x, s=380, c=primary_color, edgecolors="white",
-                          linewidth=2, ax=ax, zorder=5)
-            # Shirt number centered in circle
-            ax.annotate(
-                p.get("shirt", ""), xy=(y, x),
-                ha="center", va="center",
-                fontsize=10, fontweight="bold", color="white", zorder=6,
-            )
-            # Player name below
-            ax.annotate(
-                name[:14], xy=(y, x),
-                xytext=(0, -14), textcoords="offset points",
-                ha="center", fontsize=7, color="white",
-                bbox=dict(facecolor="#222", alpha=0.8, edgecolor="none",
-                          pad=1, boxstyle="round,pad=0.2"),
-            )
+            # Filled circle
+            circle = plt.Circle((x, y), circle_r, fc=primary_color,
+                                ec="white", linewidth=2, zorder=5)
+            ax.add_patch(circle)
+            # Outer glow ring
+            glow = plt.Circle((x, y), circle_r + 0.06, fc="none",
+                              ec=primary_color, linewidth=1.5, alpha=0.4, zorder=4)
+            ax.add_patch(glow)
 
-        # Row label on the left
-        if label:
-            ax.annotate(
-                label, xy=(y, -3), ha="center", va="center",
-                fontsize=8, color="#aaa", fontstyle="italic", zorder=2,
-                annotation_clip=False,
-            )
+            # Shirt number inside circle
+            ax.text(x, y, shirt, ha="center", va="center",
+                    fontsize=13, fontweight="bold", color="white", zorder=6)
+            # Last name below
+            ax.text(x, y - circle_r - 0.15, last,
+                    ha="center", va="top", fontsize=9, color="white",
+                    fontweight="bold", zorder=6)
 
-    _show_fig(fig)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
 def plot_formation_shape(formation_str: str, title: str = "",
