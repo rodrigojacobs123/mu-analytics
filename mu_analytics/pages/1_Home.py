@@ -1,18 +1,24 @@
-"""Home — Season KPI dashboard, league table, match results, cross-season trends."""
+"""Home — Season KPI dashboard with player stats, multi-season trends, and performance maps."""
 
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
 from components.sidebar import render_sidebar
 from viz.kpi_cards import kpi_row, section_header, form_badges
 from viz.tables import styled_league_table
-from viz.charts import line_chart, multi_line_chart
-from data.loader import load_standings, load_mu_match_list, load_all_season_results
+from viz.charts import line_chart, grouped_bar_chart
+from data.loader import (
+    load_standings, load_mu_match_list, load_all_season_results,
+    load_player_season_stats,
+)
 from processing.team_stats import compute_points_by_matchday
 from processing.poisson import _resolve_team_in_results
 from data.paths import list_seasons
 from config import (
-    MU_TEAM_NAME, MU_TEAM_ID, MU_RED, DEFAULT_LEAGUE,
-    COMPETITIONS, MU_LEAGUES,
+    MU_TEAM_NAME, MU_TEAM_ID, MU_TEAM_FOLDER, MU_RED, MU_GOLD,
+    MU_DARK_BG, MU_CARD_BG, MU_WHITE,
+    DEFAULT_LEAGUE, COMPETITIONS, MU_LEAGUES,
 )
 
 league, season = render_sidebar()
@@ -21,7 +27,9 @@ comp_display = COMPETITIONS.get(league, league)
 st.title("Manchester United · Season Dashboard")
 st.caption(f"{season} · {comp_display}")
 
-# ── KPI Cards (computed from actual match results) ──────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# § 0  KPI HEADER — Position, Points, Record, Goal Difference
+# ═══════════════════════════════════════════════════════════════════════════
 standings = load_standings(league, season)
 is_mu_league = league in MU_LEAGUES
 mu_matches = load_mu_match_list(league, season) if is_mu_league else pd.DataFrame()
@@ -99,7 +107,330 @@ elif not standings.empty and MU_TEAM_NAME in standings["team_name"].values:
 else:
     st.warning("Manchester United not found in standings for this season.")
 
-# ── Season Results ─────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 1  MULTI-SEASON DATA COLLECTION
+# ═══════════════════════════════════════════════════════════════════════════
+# Collect historical data across all available seasons
+all_seasons = list_seasons(league)
+
+season_history = []  # W/D/L, GF/GA, rank per season
+for s in all_seasons:
+    st_df = load_standings(league, s)
+    if st_df.empty or MU_TEAM_NAME not in st_df["team_name"].values:
+        continue
+    row = st_df[st_df["team_name"] == MU_TEAM_NAME].iloc[0]
+    # Also try to get aggregated player stats for assists & saves
+    pstats = load_player_season_stats(league, s, MU_TEAM_FOLDER)
+    total_assists = 0
+    total_saves = 0
+    if not pstats.empty:
+        total_assists = int(pstats["Goal Assists"].sum()) if "Goal Assists" in pstats.columns else 0
+        total_saves = int(pstats["Saves Made"].sum()) if "Saves Made" in pstats.columns else 0
+    season_history.append({
+        "season": s.replace("-", "/")[2:],  # "2025-2026" → "25/2026" → short label
+        "season_full": s,
+        "wins": int(row["won"]),
+        "draws": int(row["drawn"]),
+        "losses": int(row["lost"]),
+        "gf": int(row["gf"]),
+        "ga": int(row["ga"]),
+        "gd": int(row["gd"]),
+        "points": int(row["points"]),
+        "rank": int(row["rank"]),
+        "played": int(row["played"]),
+        "assists": total_assists,
+        "saves": total_saves,
+    })
+
+hist_df = pd.DataFrame(season_history) if season_history else pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 2  MATCH RESULTS BREAKDOWN + PLAYER STATS TABLE
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+col_results, col_player = st.columns([1, 2])
+
+# ── Left: Match Results Breakdown (multi-season) ────────────────────────
+with col_results:
+    section_header("Match Results Breakdown")
+    if not hist_df.empty:
+        # Show last 8 seasons max for readability
+        plot_df = hist_df.tail(8).copy()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["wins"],
+            name="Wins", marker_color="#4CAF50",
+        ))
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["draws"],
+            name="Draws", marker_color=MU_GOLD,
+        ))
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["losses"],
+            name="Losses", marker_color=MU_RED,
+        ))
+        fig.update_layout(
+            barmode="group",
+            xaxis_title="", yaxis_title="",
+            height=350,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=20, r=20, t=40, b=30),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No historical data available.")
+
+    # ── Offensive & Defensive Performance ────────────────────────────────
+    section_header("Offensive & Defensive Performance")
+    if not hist_df.empty:
+        plot_df = hist_df.tail(8).copy()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["saves"],
+            name="Saves", marker_color="#666666",
+        ))
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["gf"],
+            name="Goals", marker_color="#4CAF50",
+        ))
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["assists"],
+            name="Assists", marker_color=MU_GOLD,
+        ))
+        fig.add_trace(go.Bar(
+            x=plot_df["season"], y=plot_df["ga"],
+            name="Goals Against", marker_color="#FF6B35",
+        ))
+        fig.update_layout(
+            barmode="group",
+            xaxis_title="", yaxis_title="",
+            height=350,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=20, r=20, t=40, b=30),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ── Right: Player Stats Table ────────────────────────────────────────────
+with col_player:
+    section_header("Player Statistics")
+    pstats = load_player_season_stats(league, season, MU_TEAM_FOLDER)
+    if not pstats.empty:
+        # Build display table with key metrics
+        cols_map = {
+            "dorsal": "Shirt",
+            "nombre": "Player",
+            "Goals": "Goals",
+            "Goal Assists": "Assists",
+            "Shots On Target ( inc goals )": "Shots on Target",
+            "Total Fouls Conceded": "Fouls",
+            "Yellow Cards": "Yellow Cards",
+            "Total Red Cards": "Red Cards",
+            "Time Played": "Minutes Played",
+        }
+        available = {k: v for k, v in cols_map.items() if k in pstats.columns}
+        display = pstats[list(available.keys())].copy()
+        display.columns = list(available.values())
+
+        # Compute Shot Accuracy %
+        if "Total Shots" in pstats.columns and "Shots On Target ( inc goals )" in pstats.columns:
+            total_shots = pstats["Total Shots"].fillna(0)
+            on_target = pstats["Shots On Target ( inc goals )"].fillna(0)
+            display["Accuracy"] = (on_target / total_shots.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
+            display["Accuracy"] = display["Accuracy"].astype(str) + "%"
+
+        # Fill NaN with 0 and convert to int where possible
+        for col in ["Goals", "Assists", "Shots on Target", "Fouls", "Yellow Cards", "Red Cards", "Minutes Played"]:
+            if col in display.columns:
+                display[col] = display[col].fillna(0).astype(int)
+
+        if "Shirt" in display.columns:
+            display["Shirt"] = display["Shirt"].fillna(0).astype(int)
+
+        # Sort by Goals descending, then by Minutes Played
+        display = display.sort_values(
+            by=["Goals", "Minutes Played"],
+            ascending=[False, False],
+        ).reset_index(drop=True)
+
+        # Filter out players with 0 minutes
+        display = display[display["Minutes Played"] > 0]
+
+        st.dataframe(
+            display,
+            hide_index=True,
+            use_container_width=True,
+            height=620,
+            column_config={
+                "Shirt": st.column_config.NumberColumn("🔢", width="small"),
+                "Player": st.column_config.TextColumn("Player", width="medium"),
+                "Goals": st.column_config.NumberColumn("⚽ Goals", width="small"),
+                "Assists": st.column_config.NumberColumn("🅰️ Assists", width="small"),
+                "Shots on Target": st.column_config.NumberColumn("🎯 SOT", width="small"),
+                "Accuracy": st.column_config.TextColumn("Accuracy", width="small"),
+                "Fouls": st.column_config.NumberColumn("Fouls", width="small"),
+                "Yellow Cards": st.column_config.NumberColumn("🟨", width="small"),
+                "Red Cards": st.column_config.NumberColumn("🟥", width="small"),
+                "Minutes Played": st.column_config.NumberColumn("⏱️ Mins", width="small"),
+            },
+        )
+        st.caption(f"{len(display)} players")
+    else:
+        st.info("No player statistics available for this season.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 3  HISTORICAL POSITION TABLE + SCATTER PLOTS
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+col_hist, col_scatter1, col_scatter2 = st.columns([1, 1, 1])
+
+# ── Historical Position per Season ──────────────────────────────────────
+with col_hist:
+    section_header("Season-by-Season Record")
+    if not hist_df.empty:
+        pos_df = hist_df[["season_full", "rank", "points", "played", "wins", "draws", "losses", "gf", "ga", "gd"]].copy()
+        pos_df.columns = ["Season", "Rank", "Pts", "P", "W", "D", "L", "GF", "GA", "GD"]
+        pos_df = pos_df.sort_values("Season", ascending=False)
+        st.dataframe(
+            pos_df,
+            hide_index=True,
+            use_container_width=True,
+            height=420,
+            column_config={
+                "Season": st.column_config.TextColumn("Season", width="small"),
+                "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                "Pts": st.column_config.NumberColumn("Pts", width="small"),
+                "GD": st.column_config.NumberColumn("GD", width="small"),
+            },
+        )
+    else:
+        st.info("No historical data.")
+
+# ── Minutes vs Production (scatter) ─────────────────────────────────────
+with col_scatter1:
+    section_header("Minutes vs Production")
+    if not pstats.empty:
+        scatter_df = pstats.copy()
+        scatter_df["Goal Contributions"] = (
+            scatter_df["Goals"].fillna(0) + scatter_df["Goal Assists"].fillna(0)
+        )
+        scatter_df["Minutes"] = scatter_df["Time Played"].fillna(0)
+        scatter_df["Player"] = scatter_df["nombre"]
+
+        # Map position to display labels
+        pos_map = {"Goalkeeper": "GK", "Defender": "DF", "Midfielder": "MF", "Forward": "FW"}
+        scatter_df["Position"] = scatter_df["posicion"].map(pos_map).fillna("?")
+
+        # Filter to players with at least some minutes
+        scatter_df = scatter_df[scatter_df["Minutes"] > 0]
+
+        pos_colors = {"GK": "#888888", "DF": "#42A5F5", "MF": MU_RED, "FW": MU_GOLD}
+
+        fig = px.scatter(
+            scatter_df,
+            x="Minutes",
+            y="Goal Contributions",
+            color="Position",
+            size="Goal Contributions",
+            size_max=25,
+            hover_name="Player",
+            color_discrete_map=pos_colors,
+            template="mu_dark",
+        )
+        # Add average reference lines
+        avg_mins = scatter_df["Minutes"].mean()
+        avg_gc = scatter_df["Goal Contributions"].mean()
+        fig.add_hline(y=avg_gc, line_dash="dash", line_color="#555", opacity=0.5,
+                      annotation_text="Avg Contributions", annotation_font_color="#888")
+        fig.add_vline(x=avg_mins, line_dash="dash", line_color="#555", opacity=0.5,
+                      annotation_text="Avg Minutes", annotation_font_color="#888")
+        fig.update_layout(
+            height=420,
+            margin=dict(l=20, r=20, t=30, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            xaxis_title="Minutes Played",
+            yaxis_title="Goal Contributions",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No player data.")
+
+# ── Player Performance Map (scatter) ─────────────────────────────────────
+with col_scatter2:
+    section_header("Player Performance Map")
+    if not pstats.empty:
+        perf_df = pstats.copy()
+        perf_df["Minutes"] = perf_df["Time Played"].fillna(0)
+        perf_df = perf_df[perf_df["Minutes"] >= 90].copy()  # At least 1 full match
+
+        # Compute per-90 metrics for position score
+        perf_df["per90"] = 90.0 / perf_df["Minutes"]
+
+        # Position score: weighted combination of key actions per 90
+        perf_df["goals_p90"] = perf_df["Goals"].fillna(0) * perf_df["per90"]
+        perf_df["assists_p90"] = perf_df["Goal Assists"].fillna(0) * perf_df["per90"]
+        perf_df["tackles_p90"] = perf_df["Tackles Won"].fillna(0) * perf_df["per90"] if "Tackles Won" in perf_df.columns else 0
+        perf_df["interceptions_p90"] = perf_df["Interceptions"].fillna(0) * perf_df["per90"] if "Interceptions" in perf_df.columns else 0
+        perf_df["keypasses_p90"] = perf_df["Key Passes (Attempt Assists)"].fillna(0) * perf_df["per90"] if "Key Passes (Attempt Assists)" in perf_df.columns else 0
+
+        # Normalize each metric 0-1 within squad
+        for col in ["goals_p90", "assists_p90", "tackles_p90", "interceptions_p90", "keypasses_p90"]:
+            if col in perf_df.columns:
+                cmax = perf_df[col].max()
+                if cmax > 0:
+                    perf_df[col] = perf_df[col] / cmax
+
+        # Position Score = weighted average of normalized per-90 metrics
+        perf_df["Position Score"] = (
+            perf_df["goals_p90"] * 0.30 +
+            perf_df["assists_p90"] * 0.20 +
+            perf_df.get("tackles_p90", 0) * 0.20 +
+            perf_df.get("interceptions_p90", 0) * 0.15 +
+            perf_df.get("keypasses_p90", 0) * 0.15
+        )
+
+        perf_df["Goal Contributions"] = (
+            perf_df["Goals"].fillna(0) + perf_df["Goal Assists"].fillna(0)
+        )
+        perf_df["Contributions p90"] = perf_df["Goal Contributions"] * perf_df["per90"]
+        perf_df["Player"] = perf_df["nombre"]
+
+        pos_map = {"Goalkeeper": "GK", "Defender": "DF", "Midfielder": "MF", "Forward": "FW"}
+        perf_df["Position"] = perf_df["posicion"].map(pos_map).fillna("?")
+        perf_df = perf_df[perf_df["Position"] != "GK"]  # Exclude GKs from performance map
+
+        pos_colors = {"DF": "#42A5F5", "MF": MU_RED, "FW": MU_GOLD}
+
+        fig = px.scatter(
+            perf_df,
+            x="Position Score",
+            y="Contributions p90",
+            color="Position",
+            size="Minutes",
+            size_max=30,
+            hover_name="Player",
+            color_discrete_map=pos_colors,
+            template="mu_dark",
+        )
+        fig.update_layout(
+            height=420,
+            margin=dict(l=20, r=20, t=30, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            xaxis_title="Overall Position Score",
+            yaxis_title="Goal Contributions / 90",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No player data.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 4  SEASON RESULTS TABLE
+# ═══════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 section_header("Season Results")
 
@@ -148,7 +479,10 @@ elif not results.empty:
 else:
     st.info("No results available for this season.")
 
-# ── Layout: League Table + Points Trend ─────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+# § 5  LEAGUE TABLE + POINTS PROGRESSION
+# ═══════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 col_table, col_chart = st.columns([1, 1])
 
@@ -168,17 +502,8 @@ with col_chart:
         st.info("No matchday data available.")
 
     section_header("Historical Points by Season")
-    season_points = []
-    for s in list_seasons(league):
-        st_df = load_standings(league, s)
-        if not st_df.empty and MU_TEAM_NAME in st_df["team_name"].values:
-            row = st_df[st_df["team_name"] == MU_TEAM_NAME].iloc[0]
-            season_points.append({"season": s, "points": int(row["points"]),
-                                  "position": int(row["rank"])})
-
-    if season_points:
-        sp_df = pd.DataFrame(season_points)
-        fig = line_chart(sp_df, x="season", y="points",
+    if not hist_df.empty:
+        fig = line_chart(hist_df, x="season", y="points",
                          title="MU Points by Season", y_label="Total Points",
                          markers=True)
         st.plotly_chart(fig, use_container_width=True)
