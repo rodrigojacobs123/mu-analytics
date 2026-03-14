@@ -241,8 +241,15 @@ with col_player:
             succ = pstats[succ_col].fillna(0)
             fail = pstats[fail_col].fillna(0)
             total = succ + fail
-            display["Accuracy"] = (succ / total.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
-            display["Accuracy"] = display["Accuracy"].astype(str) + "%"
+            display["Pass Acc."] = (succ / total.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
+            display["Pass Acc."] = display["Pass Acc."].astype(str) + "%"
+
+        # Compute Shot Accuracy %
+        if "Total Shots" in pstats.columns and "Shots On Target ( inc goals )" in pstats.columns:
+            total_shots = pstats["Total Shots"].fillna(0)
+            on_target = pstats["Shots On Target ( inc goals )"].fillna(0)
+            display["Shot Acc."] = (on_target / total_shots.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
+            display["Shot Acc."] = display["Shot Acc."].astype(str) + "%"
 
         # Fill NaN with 0 and convert to int where possible
         for col in ["Goals", "Assists", "Shots on Target", "Fouls", "Yellow Cards", "Red Cards", "Minutes Played"]:
@@ -272,7 +279,8 @@ with col_player:
                 "Goals": st.column_config.NumberColumn("⚽ Goals", width="small"),
                 "Assists": st.column_config.NumberColumn("🅰️ Assists", width="small"),
                 "Shots on Target": st.column_config.NumberColumn("🎯 SOT", width="small"),
-                "Accuracy": st.column_config.TextColumn("Accuracy", width="small"),
+                "Pass Acc.": st.column_config.TextColumn("Pass %", width="small"),
+                "Shot Acc.": st.column_config.TextColumn("Shot %", width="small"),
                 "Fouls": st.column_config.NumberColumn("Fouls", width="small"),
                 "Yellow Cards": st.column_config.NumberColumn("🟨", width="small"),
                 "Red Cards": st.column_config.NumberColumn("🟥", width="small"),
