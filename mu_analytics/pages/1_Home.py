@@ -234,11 +234,14 @@ with col_player:
         display = pstats[list(available.keys())].copy()
         display.columns = list(available.values())
 
-        # Compute Shot Accuracy %
-        if "Total Shots" in pstats.columns and "Shots On Target ( inc goals )" in pstats.columns:
-            total_shots = pstats["Total Shots"].fillna(0)
-            on_target = pstats["Shots On Target ( inc goals )"].fillna(0)
-            display["Accuracy"] = (on_target / total_shots.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
+        # Compute Pass Accuracy %
+        succ_col = "Total Successful Passes ( Excl Crosses & Corners ) "
+        fail_col = "Total Unsuccessful Passes ( Excl Crosses & Corners )"
+        if succ_col in pstats.columns and fail_col in pstats.columns:
+            succ = pstats[succ_col].fillna(0)
+            fail = pstats[fail_col].fillna(0)
+            total = succ + fail
+            display["Accuracy"] = (succ / total.replace(0, float("nan")) * 100).fillna(0).round(0).astype(int)
             display["Accuracy"] = display["Accuracy"].astype(str) + "%"
 
         # Fill NaN with 0 and convert to int where possible
