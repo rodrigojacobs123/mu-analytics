@@ -128,7 +128,7 @@ for s in all_seasons:
         total_assists = int(pstats["Goal Assists"].sum()) if "Goal Assists" in pstats.columns else 0
         total_saves = int(pstats["Saves Made"].sum()) if "Saves Made" in pstats.columns else 0
     season_history.append({
-        "season": s.replace("-", "/")[2:],  # "2025-2026" → "25/2026" → short label
+        "season": s[:4][-2:] + "/" + s[-4:][-2:],  # "2025-2026" → "25/26"
         "season_full": s,
         "wins": int(row["won"]),
         "draws": int(row["drawn"]),
@@ -157,8 +157,8 @@ col_results, col_player = st.columns([1, 2])
 with col_results:
     section_header("Match Results Breakdown")
     if not hist_df.empty:
-        # Show last 8 seasons max for readability
-        plot_df = hist_df.tail(8).copy()
+        # Show last 7 seasons, chronological order (oldest → newest)
+        plot_df = hist_df.head(7).iloc[::-1].copy()
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=plot_df["season"], y=plot_df["wins"],
@@ -186,7 +186,7 @@ with col_results:
     # ── Offensive & Defensive Performance ────────────────────────────────
     section_header("Offensive & Defensive Performance")
     if not hist_df.empty:
-        plot_df = hist_df.tail(8).copy()
+        plot_df = hist_df.head(7).iloc[::-1].copy()
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=plot_df["season"], y=plot_df["saves"],
