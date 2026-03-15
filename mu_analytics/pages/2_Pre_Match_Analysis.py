@@ -447,15 +447,15 @@ if home_events_5 and away_events_5 and home_tid and away_tid:
     st.subheader("Dominant Actions by Zone")
     dz1, dz2 = st.columns(2)
     with dz1:
-        h_passes = extract_passes(home_events_5, team_id=home_tid)
-        h_shots = extract_shots(home_events_5, home_tid)
-        plot_dominant_actions_by_zone(h_passes, h_shots,
-                                      title=f"{home_team} (Last 5)")
+        h_passes = extract_passes(home_events_5, team_id=home_tid).assign(action="Pass")
+        h_shots = extract_shots(home_events_5, home_tid).assign(action="Shot")
+        h_actions = pd.concat([h_passes[["x", "y", "action"]], h_shots[["x", "y", "action"]]], ignore_index=True)
+        plot_dominant_actions_by_zone(h_actions, title=f"{home_team} (Last 5)")
     with dz2:
-        a_passes = extract_passes(away_events_5, team_id=away_tid)
-        a_shots = extract_shots(away_events_5, away_tid)
-        plot_dominant_actions_by_zone(a_passes, a_shots,
-                                      title=f"{away_team} (Last 5)")
+        a_passes = extract_passes(away_events_5, team_id=away_tid).assign(action="Pass")
+        a_shots = extract_shots(away_events_5, away_tid).assign(action="Shot")
+        a_actions = pd.concat([a_passes[["x", "y", "action"]], a_shots[["x", "y", "action"]]], ignore_index=True)
+        plot_dominant_actions_by_zone(a_actions, title=f"{away_team} (Last 5)")
 
     # ── Corner Analysis ──────────────────────────────────────────────────
     st.subheader("Corner Analysis (Last 5 Games)")
