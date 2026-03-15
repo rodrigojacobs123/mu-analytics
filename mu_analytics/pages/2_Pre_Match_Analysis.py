@@ -16,7 +16,7 @@ from viz.charts import (
 from viz.radar import team_radar
 from viz.pitch import (
     plot_formation, plot_ball_win_height, plot_dominant_actions_by_zone,
-    plot_set_piece_map,
+    plot_set_piece_map, ZONE_ACTION_COLORS,
 )
 from data.loader import (
     load_all_season_results, load_match_raw, build_player_name_map,
@@ -24,6 +24,8 @@ from data.loader import (
 from data.event_parser import (
     extract_formation, parse_match_info, extract_tackles, extract_interceptions,
     extract_ball_recoveries, extract_passes, extract_shots,
+    extract_take_ons, extract_aerials, extract_clearances,
+    extract_corners, extract_fouls,
 )
 from processing.set_pieces import compute_corner_breakdown
 from processing.poisson import compute_enhanced_prediction
@@ -387,19 +389,23 @@ st.caption("Aggregated from each team's last 5 matches this season")
 
 
 def _load_last_n_events(resolved_name, n=5):
-    """Load and merge events from the last N matches for a team."""
+    """Load and merge events from the last N matches for a team.
+
+    Returns (events_list, team_id, match_count).
+    """
     if results_df.empty:
-        return [], None
+        return [], None, 0
     team_matches = results_df[
         (results_df["home_team"] == resolved_name)
         | (results_df["away_team"] == resolved_name)
     ]
     if team_matches.empty:
-        return [], None
+        return [], None, 0
 
     last_n = team_matches.tail(n)
     all_events = []
     team_id = None
+    match_count = 0
 
     for _, row in last_n.iterrows():
         from data.loader import _find_match_id_for_row
@@ -418,13 +424,229 @@ def _load_last_n_events(resolved_name, n=5):
                 else match_info["away_id"]
             )
         all_events.extend(match_events)
+        match_count += 1
 
-    return all_events, team_id
+    return all_events, team_id, match_count
+
+
+# ── Helper functions for enhanced zone analysis ────────────────────────────
+
+def _build_zone_actions_prematch(events, tid):
+    """Assemble a unified actions DataFrame from all event extractors (last N games)."""
+    frames = []
+
+    # Passes → split into Progressive Passes and Crosses
+    passes = extract_passes(events, team_id=tid)
+    if not passes.empty and "end_x" in passes.columns:
+        clean = passes.dropna(subset=["end_x"]).copy()
+        prog_mask = (clean["end_x"] - clean["x"]) > 25
+        prog = clean[prog_mask].copy()
+        if not prog.empty:
+            prog["action"] = "Prog. Pass"
+            frames.append(prog[["x", "y", "action", "player_id", "player_name"]])
+        cross_mask = (
+            (clean["end_x"] > 83) & (clean["end_y"] > 21) & (clean["end_y"] < 79)
+            & ~prog_mask
+        )
+        crosses = clean[cross_mask].copy()
+        if not crosses.empty:
+            crosses["action"] = "Cross"
+            frames.append(crosses[["x", "y", "action", "player_id", "player_name"]])
+
+    # Shots
+    shots = extract_shots(events, tid)
+    if not shots.empty:
+        s = shots[["x", "y", "player_id", "player_name"]].copy()
+        s["action"] = "Shot"
+        frames.append(s)
+
+    # Tackles (won only)
+    tackles = extract_tackles(events, tid)
+    if not tackles.empty:
+        t = tackles[tackles["outcome"] == 1][["x", "y", "player_id", "player_name"]].copy()
+        if not t.empty:
+            t["action"] = "Tackle"
+            frames.append(t)
+
+    # Interceptions
+    intc = extract_interceptions(events, tid)
+    if not intc.empty:
+        i = intc[["x", "y", "player_id", "player_name"]].copy()
+        i["action"] = "Interception"
+        frames.append(i)
+
+    # Ball recoveries
+    recs = extract_ball_recoveries(events, tid)
+    if not recs.empty:
+        r = recs[["x", "y", "player_id", "player_name"]].copy()
+        r["action"] = "Recovery"
+        frames.append(r)
+
+    # Take-ons (successful)
+    tos = extract_take_ons(events, tid)
+    if not tos.empty:
+        to_won = tos[tos["outcome"] == 1][["x", "y", "player_id", "player_name"]].copy()
+        if not to_won.empty:
+            to_won["action"] = "Take-on"
+            frames.append(to_won)
+
+    # Aerials (won)
+    aer = extract_aerials(events, tid)
+    if not aer.empty:
+        a_won = aer[aer["outcome"] == 1][["x", "y", "player_id", "player_name"]].copy()
+        if not a_won.empty:
+            a_won["action"] = "Aerial"
+            frames.append(a_won)
+
+    # Clearances
+    clr = extract_clearances(events, tid)
+    if not clr.empty:
+        c = clr[["x", "y", "player_id", "player_name"]].copy()
+        c["action"] = "Clearance"
+        frames.append(c)
+
+    # Fouls
+    fls = extract_fouls(events, tid)
+    if not fls.empty:
+        fo = fls[["x", "y", "player_id", "player_name"]].copy()
+        fo["action"] = "Foul"
+        frames.append(fo)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _resolve_player_name(pid, dfs):
+    """Resolve player name from the first non-empty DataFrame that contains it."""
+    for df in dfs:
+        if df.empty or "player_id" not in df.columns:
+            continue
+        match = df[df["player_id"] == pid]
+        if not match.empty and "player_name" in match.columns:
+            name = match.iloc[0]["player_name"]
+            if name:
+                return name
+    return f"Unknown ({pid[:8]})"
+
+
+def _count_fk_taken(events, tid, pid):
+    """Count how many free kicks a player took (first action after opponent foul)."""
+    count = 0
+    for i, e in enumerate(events):
+        if e.get("typeId") != 4:  # EVENT_FOUL
+            continue
+        if e.get("contestantId") == tid:
+            continue  # our foul, not our FK to take
+        foul_time = int(e.get("timeMin", 0)) * 60 + int(e.get("timeSec", 0))
+        for j in range(i + 1, min(i + 10, len(events))):
+            nxt = events[j]
+            if nxt.get("contestantId") != tid:
+                continue
+            nxt_time = int(nxt.get("timeMin", 0)) * 60 + int(nxt.get("timeSec", 0))
+            if nxt_time - foul_time > 30:
+                break
+            if nxt.get("playerId") == pid:
+                count += 1
+            break
+    return count
+
+
+def _build_player_stats_table(events, tid, n_matches=5):
+    """Build per-player stats aggregated across N matches for display."""
+    if n_matches < 1:
+        n_matches = 1
+
+    passes = extract_passes(events, team_id=tid)
+    shots = extract_shots(events, tid)
+    tackles = extract_tackles(events, tid)
+    interceptions = extract_interceptions(events, tid)
+    recoveries = extract_ball_recoveries(events, tid)
+    clearances = extract_clearances(events, tid)
+    corners = extract_corners(events, tid)
+    take_ons = extract_take_ons(events, tid)
+
+    # Collect all player IDs
+    all_pids = set()
+    for df in [passes, shots, tackles, interceptions, recoveries,
+               clearances, corners, take_ons]:
+        if not df.empty and "player_id" in df.columns:
+            all_pids.update(df["player_id"].unique())
+
+    rows = []
+    for pid in all_pids:
+        if not pid:
+            continue
+
+        name = _resolve_player_name(pid, [passes, shots, tackles,
+                                          interceptions, corners])
+
+        # Shots
+        p_shots = shots[shots["player_id"] == pid] if not shots.empty else pd.DataFrame()
+        n_shots = len(p_shots)
+        shots_on = 0
+        n_goals = 0
+        total_xg = 0.0
+        if not p_shots.empty:
+            shots_on = int(p_shots["outcome"].isin(["Goal", "Saved"]).sum())
+            n_goals = int((p_shots["outcome"] == "Goal").sum())
+            if "xg" in p_shots.columns:
+                total_xg = float(p_shots["xg"].sum())
+
+        # Passes
+        p_passes = passes[passes["player_id"] == pid] if not passes.empty else pd.DataFrame()
+        total_passes = len(p_passes)
+        succ_passes = int((p_passes["outcome"] == 1).sum()) if not p_passes.empty else 0
+        pass_pct = round(succ_passes / total_passes * 100, 1) if total_passes > 0 else 0
+
+        # Key passes (into opponent box)
+        key_passes = 0
+        if not p_passes.empty and "end_x" in p_passes.columns:
+            kp = p_passes.dropna(subset=["end_x", "end_y"])
+            key_passes = int(((kp["end_x"] > 83) & (kp["end_y"] > 21)
+                              & (kp["end_y"] < 79) & (kp["outcome"] == 1)).sum())
+
+        # Defensive actions
+        n_tackles = len(tackles[tackles["player_id"] == pid]) if not tackles.empty else 0
+        n_ints = len(interceptions[interceptions["player_id"] == pid]) if not interceptions.empty else 0
+        n_recs = len(recoveries[recoveries["player_id"] == pid]) if not recoveries.empty else 0
+        n_clears = len(clearances[clearances["player_id"] == pid]) if not clearances.empty else 0
+        def_actions = n_tackles + n_ints + n_recs + n_clears
+
+        # Set-piece roles
+        n_corners = len(corners[corners["player_id"] == pid]) if not corners.empty else 0
+        n_fks = _count_fk_taken(events, tid, pid)
+
+        # Take-ons
+        p_tos = take_ons[take_ons["player_id"] == pid] if not take_ons.empty else pd.DataFrame()
+        tos_won = int((p_tos["outcome"] == 1).sum()) if not p_tos.empty else 0
+
+        rows.append({
+            "Player": name,
+            "⚽ Corners": n_corners,
+            "🎯 FKs": n_fks,
+            "Shots/G": round(n_shots / n_matches, 1),
+            "SoT/G": round(shots_on / n_matches, 1),
+            "Goals": n_goals,
+            "xG": round(total_xg, 2),
+            "Key Pass": key_passes,
+            "Def/G": round(def_actions / n_matches, 1),
+            "Pass %": pass_pct,
+            "Drb Won": tos_won,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values(
+        ["⚽ Corners", "Shots/G", "Def/G"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
 
 
 with st.spinner("Loading last 5 matches for each team…"):
-    home_events_5, home_tid = _load_last_n_events(_home_resolved, n=5)
-    away_events_5, away_tid = _load_last_n_events(_away_resolved, n=5)
+    home_events_5, home_tid, home_n = _load_last_n_events(_home_resolved, n=5)
+    away_events_5, away_tid, away_n = _load_last_n_events(_away_resolved, n=5)
 
 if home_events_5 and away_events_5 and home_tid and away_tid:
     # ── Ball Win Height ──────────────────────────────────────────────────
@@ -443,19 +665,97 @@ if home_events_5 and away_events_5 and home_tid and away_tid:
         plot_ball_win_height(a_tackles, a_ints, a_recs,
                              title=f"{away_team} (Last 5)")
 
-    # ── Dominant Actions by Zone ─────────────────────────────────────────
+    # ── Dominant Actions by Zone (enhanced with filters) ─────────────────
     st.subheader("Dominant Actions by Zone")
+    st.caption("Filter by action type and player to explore each team's pitch dominance")
+
+    # Build full actions for both teams
+    h_all_actions = _build_zone_actions_prematch(home_events_5, home_tid)
+    a_all_actions = _build_zone_actions_prematch(away_events_5, away_tid)
+
+    # Shared action type filter
+    all_action_types = list(ZONE_ACTION_COLORS.keys())
+    dz_action_filter = st.multiselect(
+        "Action Types", all_action_types, default=all_action_types,
+        key="prematch_dz_actions",
+    )
+
+    # Two columns with per-team player filter + zone chart
     dz1, dz2 = st.columns(2)
+
     with dz1:
-        h_passes = extract_passes(home_events_5, team_id=home_tid).assign(action="Pass")
-        h_shots = extract_shots(home_events_5, home_tid).assign(action="Shot")
-        h_actions = pd.concat([h_passes[["x", "y", "action"]], h_shots[["x", "y", "action"]]], ignore_index=True)
-        plot_dominant_actions_by_zone(h_actions, title=f"{home_team} (Last 5)")
+        h_player_choices = ["All Players"]
+        if not h_all_actions.empty and "player_name" in h_all_actions.columns:
+            unique = (
+                h_all_actions[h_all_actions["player_name"].notna()
+                              & (h_all_actions["player_name"] != "")]
+                .drop_duplicates(subset=["player_id"])
+                .sort_values("player_name")
+            )
+            for _, p in unique.iterrows():
+                h_player_choices.append(f"{p['player_name']}|{p['player_id']}")
+
+        h_sel = st.selectbox(
+            f"{home_team} — Player",
+            h_player_choices,
+            format_func=lambda x: x.split("|")[0] if "|" in x else x,
+            key="prematch_dz_h_player",
+        )
+        filtered_h = h_all_actions.copy()
+        if h_sel != "All Players" and "|" in h_sel:
+            filtered_h = filtered_h[filtered_h["player_id"] == h_sel.split("|")[1]]
+        if dz_action_filter:
+            filtered_h = filtered_h[filtered_h["action"].isin(dz_action_filter)]
+
+        h_label = h_sel.split("|")[0] if "|" in h_sel else f"{home_team} (Last 5)"
+        plot_dominant_actions_by_zone(filtered_h, title=h_label)
+
     with dz2:
-        a_passes = extract_passes(away_events_5, team_id=away_tid).assign(action="Pass")
-        a_shots = extract_shots(away_events_5, away_tid).assign(action="Shot")
-        a_actions = pd.concat([a_passes[["x", "y", "action"]], a_shots[["x", "y", "action"]]], ignore_index=True)
-        plot_dominant_actions_by_zone(a_actions, title=f"{away_team} (Last 5)")
+        a_player_choices = ["All Players"]
+        if not a_all_actions.empty and "player_name" in a_all_actions.columns:
+            unique = (
+                a_all_actions[a_all_actions["player_name"].notna()
+                              & (a_all_actions["player_name"] != "")]
+                .drop_duplicates(subset=["player_id"])
+                .sort_values("player_name")
+            )
+            for _, p in unique.iterrows():
+                a_player_choices.append(f"{p['player_name']}|{p['player_id']}")
+
+        a_sel = st.selectbox(
+            f"{away_team} — Player",
+            a_player_choices,
+            format_func=lambda x: x.split("|")[0] if "|" in x else x,
+            key="prematch_dz_a_player",
+        )
+        filtered_a = a_all_actions.copy()
+        if a_sel != "All Players" and "|" in a_sel:
+            filtered_a = filtered_a[filtered_a["player_id"] == a_sel.split("|")[1]]
+        if dz_action_filter:
+            filtered_a = filtered_a[filtered_a["action"].isin(dz_action_filter)]
+
+        a_label = a_sel.split("|")[0] if "|" in a_sel else f"{away_team} (Last 5)"
+        plot_dominant_actions_by_zone(filtered_a, title=a_label)
+
+    # ── Player Roles & Stats (Last 5 Games) ───────────────────────────────
+    st.subheader("Player Roles & Stats (Last 5 Games)")
+    st.caption("Per-player aggregates · Corners/FKs = set-piece count · Rates are per game")
+
+    pr1, pr2 = st.columns(2)
+    with pr1:
+        h_stats = _build_player_stats_table(home_events_5, home_tid, home_n)
+        if not h_stats.empty:
+            st.markdown(f"**{home_team}**")
+            st.dataframe(h_stats, hide_index=True, use_container_width=True, height=420)
+        else:
+            st.info(f"No player data for {home_team}.")
+    with pr2:
+        a_stats = _build_player_stats_table(away_events_5, away_tid, away_n)
+        if not a_stats.empty:
+            st.markdown(f"**{away_team}**")
+            st.dataframe(a_stats, hide_index=True, use_container_width=True, height=420)
+        else:
+            st.info(f"No player data for {away_team}.")
 
     # ── Corner Analysis ──────────────────────────────────────────────────
     st.subheader("Corner Analysis (Last 5 Games)")
