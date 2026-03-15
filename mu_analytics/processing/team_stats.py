@@ -137,6 +137,92 @@ def build_team_name_lookup(league: str, season: str) -> dict[str, str]:
     return lookup
 
 
+@st.cache_data(ttl=3600)
+def compute_standings_from_results(league: str, season: str) -> pd.DataFrame:
+    """Build a full league table from match results.
+
+    Used when the static standings.json is stale (fewer matches than
+    what the event data contains).  Produces the same columns as
+    ``load_standings``: rank, team_name, played, won, drawn, lost,
+    gf, ga, gd, points — so it's a drop-in replacement.
+    """
+    results = load_all_season_results(league, season)
+    if results.empty:
+        return pd.DataFrame()
+
+    teams: dict[str, dict] = {}
+    team_ids: dict[str, str] = {}           # team_name → team_id
+
+    for _, row in results.iterrows():
+        ht, at = row["home_team"], row["away_team"]
+        hs, as_ = int(row["home_score"]), int(row["away_score"])
+
+        for team in (ht, at):
+            if team not in teams:
+                teams[team] = {"won": 0, "drawn": 0, "lost": 0, "gf": 0, "ga": 0}
+
+        # Track team IDs (from results columns)
+        if "home_id" in row.index and row["home_id"]:
+            team_ids.setdefault(ht, row["home_id"])
+        if "away_id" in row.index and row["away_id"]:
+            team_ids.setdefault(at, row["away_id"])
+
+        # Home team
+        teams[ht]["gf"] += hs
+        teams[ht]["ga"] += as_
+        if hs > as_:
+            teams[ht]["won"] += 1
+            teams[at]["lost"] += 1
+        elif hs == as_:
+            teams[ht]["drawn"] += 1
+            teams[at]["drawn"] += 1
+        else:
+            teams[ht]["lost"] += 1
+            teams[at]["won"] += 1
+
+        # Away team
+        teams[at]["gf"] += as_
+        teams[at]["ga"] += hs
+
+    # Also build an ID→name mapping from the JSON standings so we can
+    # enrich our computed table with the "official" long names (e.g.
+    # "Manchester United FC" instead of the short "Manchester United").
+    json_st = load_standings(league, season)
+    id_to_official: dict[str, str] = {}
+    if not json_st.empty and "team_id" in json_st.columns:
+        for _, r in json_st.iterrows():
+            id_to_official[r["team_id"]] = r["team_name"]
+
+    rows = []
+    for name, s in teams.items():
+        played = s["won"] + s["drawn"] + s["lost"]
+        gd = s["gf"] - s["ga"]
+        pts = s["won"] * 3 + s["drawn"]
+        tid = team_ids.get(name, "")
+        # Use the official (long) team name when available
+        official_name = id_to_official.get(tid, name)
+        rows.append({
+            "team_name": official_name,
+            "team_id": tid,
+            "team_code": "",
+            "played": played,
+            "won": s["won"],
+            "drawn": s["drawn"],
+            "lost": s["lost"],
+            "gf": s["gf"],
+            "ga": s["ga"],
+            "gd": gd,
+            "points": pts,
+        })
+
+    df = pd.DataFrame(rows)
+    # Sort: points desc → GD desc → GF desc (standard tiebreakers)
+    df = df.sort_values(["points", "gd", "gf"], ascending=[False, False, False])
+    df["rank"] = range(1, len(df) + 1)
+    df = df.reset_index(drop=True)
+    return df
+
+
 def compute_points_by_matchday(league: str, season: str, team_name: str,
                                 team_id: str | None = None) -> pd.DataFrame:
     """Compute cumulative points by matchday for a team.

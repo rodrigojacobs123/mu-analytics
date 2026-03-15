@@ -457,6 +457,9 @@ def plot_set_piece_map(
     highlight_color: str = MU_GOLD,
     highlight_label: str = "Dangerous",
     default_label: str = "Normal",
+    color_by: str | None = None,
+    color_map: dict[str, str] | None = None,
+    goal_col: str | None = None,
 ) -> None:
     """Plot set-piece locations on a full pitch.
 
@@ -465,6 +468,10 @@ def plot_set_piece_map(
     df : DataFrame with x, y columns (Opta 0-100 coordinate system).
     highlight_col : optional bool column to split markers into two groups
                     (e.g. ``had_shot`` for corners, ``dangerous`` for FK zones).
+    color_by : optional categorical column to color-code points (e.g.
+               ``delivery_label`` for corner delivery type).
+    color_map : dict mapping category values to hex colours.
+    goal_col : optional bool column; True rows get a star marker (★).
     """
     if df.empty:
         st.info("No set-piece data to display.")
@@ -474,7 +481,37 @@ def plot_set_piece_map(
     fig, ax = _draw_pitch(pitch, figsize=(12, 8))
     ax.set_title(title, color="white", fontsize=14, pad=10)
 
-    if highlight_col and highlight_col in df.columns:
+    # ── Mode 1: color by categorical column (delivery type) ──────────
+    if color_by and color_by in df.columns:
+        cmap = color_map or {}
+        categories = sorted(df[color_by].unique())
+        for cat in categories:
+            cat_df = df[df[color_by] == cat]
+            c = cmap.get(cat, "#999")
+
+            if goal_col and goal_col in cat_df.columns:
+                no_goal = cat_df[cat_df[goal_col] != True]   # noqa: E712
+                goals = cat_df[cat_df[goal_col] == True]     # noqa: E712
+            else:
+                no_goal = cat_df
+                goals = pd.DataFrame()
+
+            if not no_goal.empty:
+                pitch.scatter(no_goal["x"], no_goal["y"], s=100, c=c,
+                              edgecolors="white", linewidth=0.6, alpha=0.8,
+                              label=cat, ax=ax, zorder=4)
+            if not goals.empty:
+                pitch.scatter(goals["x"], goals["y"], s=260, c=c,
+                              edgecolors="white", linewidth=0.8, alpha=0.95,
+                              marker="*", ax=ax, zorder=6)
+
+        # Add a single "Goal" legend entry with a star marker
+        if goal_col and goal_col in df.columns and df[goal_col].any():
+            ax.scatter([], [], s=180, c="white", marker="*",
+                       edgecolors="white", label="Goal ★")
+
+    # ── Mode 2: binary highlight (original behaviour) ────────────────
+    elif highlight_col and highlight_col in df.columns:
         hi = df[df[highlight_col] == True]   # noqa: E712
         lo = df[df[highlight_col] != True]   # noqa: E712
 
@@ -486,6 +523,8 @@ def plot_set_piece_map(
             pitch.scatter(hi["x"], hi["y"], s=140, c=highlight_color,
                           edgecolors="white", linewidth=0.8, alpha=0.9,
                           label=highlight_label, ax=ax, zorder=5)
+
+    # ── Mode 3: plain single colour ──────────────────────────────────
     else:
         pitch.scatter(df["x"], df["y"], s=100, c=color,
                       edgecolors="white", linewidth=0.5, alpha=0.7,
@@ -493,6 +532,126 @@ def plot_set_piece_map(
 
     ax.legend(loc="lower left", fontsize=9, facecolor=MU_DARK_BG,
               edgecolor="#444", labelcolor="white")
+    _show_fig(fig)
+
+
+def plot_corner_shot_panels(
+    corners_df: pd.DataFrame,
+    shots_df: pd.DataFrame,
+    team_name: str,
+    team_color: str = MU_RED,
+    n_matches: int | None = None,
+) -> None:
+    """Two-panel half-pitch showing shot locations after corners by side.
+
+    Left panel = shots from Left Corners, Right panel = shots from Right Corners.
+    Goals rendered as green stars, non-goals as circles sized by xG.
+    """
+    if corners_df.empty:
+        st.info("No corner data to display.")
+        return
+
+    sides = ["Left Corner", "Right Corner"]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 7))
+    fig.set_facecolor(MU_DARK_BG)
+    fig.suptitle(f"{team_name} — Corner Analysis", color="white",
+                 fontsize=14, fontweight="bold", y=0.97)
+
+    for idx, side in enumerate(sides):
+        ax = axes[idx]
+        pitch = VerticalPitch(**HALF_PITCH_KWARGS)
+        pitch.draw(ax=ax)
+        ax.set_facecolor(MU_DARK_BG)
+
+        side_corners = corners_df[corners_df["corner_side"] == side]
+        n_corners = len(side_corners)
+
+        side_shots = shots_df[shots_df["corner_side"] == side] if not shots_df.empty else pd.DataFrame()
+        n_shots = len(side_shots)
+
+        goals = side_shots[side_shots["outcome"] == "Goal"] if not side_shots.empty else pd.DataFrame()
+        non_goals = side_shots[side_shots["outcome"] != "Goal"] if not side_shots.empty else pd.DataFrame()
+        n_goals = len(goals)
+        total_xg = float(side_shots["xg"].sum()) if not side_shots.empty else 0.0
+
+        # Delivery destinations (first touch after each corner)
+        if "delivery_x" in side_corners.columns:
+            deliveries = side_corners.dropna(subset=["delivery_x", "delivery_y"])
+        else:
+            deliveries = pd.DataFrame()
+        n_deliveries = len(deliveries)
+
+        # Panel title
+        ax.set_title(f"{side} ({n_corners})", color="white", fontsize=12, pad=6)
+
+        if n_corners == 0:
+            ax.text(50, 82, "No corners\nfrom this side",
+                    ha="center", va="center", color="#666", fontsize=11,
+                    transform=ax.transData)
+        else:
+            # KDE heatmap on delivery destinations (more data points)
+            if n_deliveries >= 5:
+                pitch.kdeplot(deliveries["delivery_x"],
+                              deliveries["delivery_y"], ax=ax,
+                              cmap=MU_CMAP, fill=True, levels=40,
+                              thresh=0.05, alpha=0.3, zorder=2)
+
+            # Delivery destination markers — small circles, low alpha
+            if n_deliveries > 0:
+                pitch.scatter(deliveries["delivery_x"],
+                              deliveries["delivery_y"],
+                              s=40, c=team_color, edgecolors="white",
+                              linewidth=0.4, alpha=0.45, ax=ax, zorder=3)
+
+            # Non-goal shots — bigger circles sized by xG
+            if not non_goals.empty:
+                sizes = non_goals["xg"].fillna(0).clip(0) * 300 + 50
+                pitch.scatter(non_goals["x"], non_goals["y"],
+                              s=sizes, c=team_color, edgecolors="white",
+                              linewidth=0.6, alpha=0.75, ax=ax, zorder=4)
+
+            # Goal shots — green stars
+            if not goals.empty:
+                pitch.scatter(goals["x"], goals["y"],
+                              s=350, c="#4CAF50", edgecolors="white",
+                              linewidth=0.8, alpha=0.95, marker="*",
+                              ax=ax, zorder=6)
+
+            # Fallback text only if NO deliveries AND no shots
+            if n_deliveries == 0 and n_shots == 0:
+                ax.text(50, 82, f"{n_corners} corners\nno delivery data",
+                        ha="center", va="center", color="#888", fontsize=10,
+                        transform=ax.transData)
+
+        # Stats annotation at bottom of panel
+        stats_lines = [f"{n_corners} corners · {n_shots} shots · {n_goals} goals"]
+        stats_lines.append(f"xG: {total_xg:.2f}")
+        if n_matches and n_matches > 0 and n_corners > 0:
+            rate = round(n_shots / n_matches, 1)
+            stats_lines[0] += f" · {rate} shots/G"
+
+        ax.annotate(
+            "\n".join(stats_lines),
+            xy=(0.5, -0.02), xycoords="axes fraction",
+            ha="center", va="top", fontsize=9, color="#ccc",
+            bbox=dict(facecolor="#1A1A2E", alpha=0.9, edgecolor="#444",
+                      pad=4, boxstyle="round,pad=0.4"),
+        )
+
+    # Shared legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=team_color,
+                   markersize=5, alpha=0.5, linestyle="None", label="Delivery"),
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=team_color,
+                   markersize=8, linestyle="None", label="Shot"),
+        plt.Line2D([0], [0], marker="*", color="w", markerfacecolor="#4CAF50",
+                   markersize=12, linestyle="None", label="Goal"),
+    ]
+    fig.legend(handles=legend_elements, loc="lower center", ncol=3,
+               fontsize=9, facecolor=MU_DARK_BG, edgecolor="#444",
+               labelcolor="white", framealpha=0.9)
+
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
     _show_fig(fig)
 
 
@@ -546,6 +705,12 @@ def plot_ball_win_height(tackles: pd.DataFrame, interceptions: pd.DataFrame,
     )
 
     _show_fig(fig)
+
+
+CORNER_SIDE_COLORS = {
+    "Left Corner":  "#2196F3",   # blue
+    "Right Corner": "#FF9800",   # orange
+}
 
 
 ZONE_ACTION_COLORS = {

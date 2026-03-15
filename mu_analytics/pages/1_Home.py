@@ -12,7 +12,7 @@ from data.loader import (
     load_standings, load_mu_match_list, load_all_season_results,
     load_player_season_stats,
 )
-from processing.team_stats import compute_points_by_matchday
+from processing.team_stats import compute_points_by_matchday, compute_standings_from_results
 from processing.poisson import _resolve_team_in_results
 from data.paths import list_seasons
 from config import (
@@ -30,7 +30,17 @@ st.caption(f"{season} · {comp_display}")
 # ═══════════════════════════════════════════════════════════════════════════
 # § 0  KPI HEADER — Position, Points, Record, Goal Difference
 # ═══════════════════════════════════════════════════════════════════════════
-standings = load_standings(league, season)
+# Load standings — prefer computed table when the static JSON is stale
+_json_standings = load_standings(league, season)
+_computed_standings = compute_standings_from_results(league, season)
+
+if (not _computed_standings.empty
+        and (_json_standings.empty
+             or _computed_standings["played"].max() > _json_standings["played"].max())):
+    standings = _computed_standings
+else:
+    standings = _json_standings
+
 is_mu_league = league in MU_LEAGUES
 mu_matches = load_mu_match_list(league, season) if is_mu_league else pd.DataFrame()
 
@@ -117,6 +127,11 @@ all_seasons = list_seasons(league)
 season_history = []  # W/D/L, GF/GA, rank per season
 for s in all_seasons:
     st_df = load_standings(league, s)
+    # Upgrade to computed standings when JSON is stale
+    comp_df = compute_standings_from_results(league, s)
+    if (not comp_df.empty
+            and (st_df.empty or comp_df["played"].max() > st_df["played"].max())):
+        st_df = comp_df
     if st_df.empty or MU_TEAM_NAME not in st_df["team_name"].values:
         continue
     row = st_df[st_df["team_name"] == MU_TEAM_NAME].iloc[0]

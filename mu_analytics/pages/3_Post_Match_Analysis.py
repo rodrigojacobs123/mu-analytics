@@ -11,7 +11,7 @@ from viz.kpi_cards import (
 from viz.pitch import (
     plot_shot_map, plot_pass_network, plot_heatmap,
     plot_formation, plot_defensive_actions,
-    plot_progressive_passes, plot_set_piece_map,
+    plot_progressive_passes, plot_set_piece_map, plot_corner_shot_panels,
     plot_pass_map, plot_ball_win_height, plot_dominant_actions_by_zone,
     plot_goal_buildup, ZONE_ACTION_COLORS, _ORIGIN_LABELS, _ORIGIN_COLORS,
 )
@@ -30,7 +30,8 @@ from processing.pass_network import build_pass_network
 from processing.goal_buildup import extract_goal_buildups
 from processing.match_stats import compute_match_stats
 from processing.set_pieces import (
-    compute_set_piece_stats, compute_corner_breakdown, compute_dangerous_fk_zones,
+    compute_set_piece_stats, compute_corner_breakdown,
+    compute_corner_shot_detail, compute_dangerous_fk_zones,
 )
 from processing.formations import (
     get_match_formations, detect_formation_changes,
@@ -792,19 +793,29 @@ all_match_shots = extract_shots(events)
 if period is not None and not all_match_shots.empty:
     all_match_shots = all_match_shots[all_match_shots["period"] == period]
 
+# Legacy breakdown for funnel + delivery chips
 corners_h_df = compute_corner_breakdown(events, home_id, all_match_shots, period)
 corners_a_df = compute_corner_breakdown(events, away_id, all_match_shots, period)
 
+# Enhanced: corner-to-shot detail for shot location panels
+corners_h_det, corner_shots_h = compute_corner_shot_detail(
+    events, home_id, all_match_shots, period,
+)
+corners_a_det, corner_shots_a = compute_corner_shot_detail(
+    events, away_id, all_match_shots, period,
+)
+
 
 # Conversion funnel
-def _corner_funnel(corners_df, team_name, color):
-    """Render a compact corner conversion funnel."""
+def _corner_funnel(corners_df, shots_detail, team_name, color):
+    """Render a compact corner conversion funnel with xG."""
     if corners_df.empty:
         st.caption(f"{team_name}: No corners")
         return
     n = len(corners_df)
-    shots = int(corners_df["had_shot"].sum())
-    goals = int(corners_df["had_goal"].sum())
+    shots = len(shots_detail)
+    goals = int((shots_detail["outcome"] == "Goal").sum()) if not shots_detail.empty else 0
+    total_xg = float(shots_detail["xg"].sum()) if not shots_detail.empty else 0.0
     st.markdown(f"""
 <div style="text-align:center;padding:0.6rem;background:#1A1A2E;border-radius:8px;margin-bottom:0.5rem;">
 <span style="color:{color};font-size:1.6rem;font-weight:700;">{n}</span>
@@ -813,15 +824,18 @@ def _corner_funnel(corners_df, team_name, color):
 <span style="color:#888;font-size:0.8rem;"> shots &rarr; </span>
 <span style="color:#4CAF50;font-size:1.6rem;font-weight:700;">{goals}</span>
 <span style="color:#888;font-size:0.8rem;"> goals</span>
+<span style="color:#888;font-size:0.8rem;"> · </span>
+<span style="color:#FF9800;font-size:1.1rem;font-weight:600;">{total_xg:.2f}</span>
+<span style="color:#888;font-size:0.8rem;"> xG</span>
 </div>
 """, unsafe_allow_html=True)
 
 
 fc1, fc2 = st.columns(2)
 with fc1:
-    _corner_funnel(corners_h_df, home_team, h_sp_color)
+    _corner_funnel(corners_h_df, corner_shots_h, home_team, h_sp_color)
 with fc2:
-    _corner_funnel(corners_a_df, away_team, a_sp_color)
+    _corner_funnel(corners_a_df, corner_shots_a, away_team, a_sp_color)
 
 
 # Corner delivery type breakdown
@@ -848,21 +862,17 @@ with dc1:
 with dc2:
     _delivery_breakdown(corners_a_df, away_team, a_sp_color)
 
-# Corner pitch maps — where corners were delivered
+# Corner shot location panels (Left Corner | Right Corner)
 cmap1, cmap2 = st.columns(2)
 with cmap1:
-    plot_set_piece_map(
-        corners_h_df, title=f"{home_team} Corners",
-        color=h_sp_color, highlight_col="had_shot",
-        highlight_color=MU_GOLD,
-        highlight_label="Shot", default_label="No shot",
+    plot_corner_shot_panels(
+        corners_h_det, corner_shots_h,
+        team_name=home_team, team_color=h_sp_color,
     )
 with cmap2:
-    plot_set_piece_map(
-        corners_a_df, title=f"{away_team} Corners",
-        color=a_sp_color, highlight_col="had_shot",
-        highlight_color=MU_GOLD,
-        highlight_label="Shot", default_label="No shot",
+    plot_corner_shot_panels(
+        corners_a_det, corner_shots_a,
+        team_name=away_team, team_color=a_sp_color,
     )
 
 

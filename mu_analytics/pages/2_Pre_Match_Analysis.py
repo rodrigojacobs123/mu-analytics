@@ -16,7 +16,7 @@ from viz.charts import (
 from viz.radar import team_radar
 from viz.pitch import (
     plot_formation, plot_ball_win_height, plot_dominant_actions_by_zone,
-    plot_set_piece_map, ZONE_ACTION_COLORS,
+    plot_set_piece_map, plot_corner_shot_panels, ZONE_ACTION_COLORS,
 )
 from data.loader import (
     load_all_season_results, load_match_raw, build_player_name_map,
@@ -27,7 +27,7 @@ from data.event_parser import (
     extract_take_ons, extract_aerials, extract_clearances,
     extract_corners, extract_fouls,
 )
-from processing.set_pieces import compute_corner_breakdown
+from processing.set_pieces import compute_corner_breakdown, compute_corner_shot_detail
 from processing.poisson import compute_enhanced_prediction
 from config import MU_RED, MU_GOLD
 
@@ -623,8 +623,8 @@ def _build_player_stats_table(events, tid, n_matches=5):
 
         rows.append({
             "Player": name,
-            "⚽ Corners": n_corners,
-            "🎯 FKs": n_fks,
+            "Crn Tkn": n_corners,
+            "FK Tkn": n_fks,
             "Shots/G": round(n_shots / n_matches, 1),
             "SoT/G": round(shots_on / n_matches, 1),
             "Goals": n_goals,
@@ -639,7 +639,7 @@ def _build_player_stats_table(events, tid, n_matches=5):
     if df.empty:
         return df
     return df.sort_values(
-        ["⚽ Corners", "Shots/G", "Def/G"],
+        ["Crn Tkn", "Shots/G", "Def/G"],
         ascending=[False, False, False],
     ).reset_index(drop=True)
 
@@ -739,7 +739,7 @@ if home_events_5 and away_events_5 and home_tid and away_tid:
 
     # ── Player Roles & Stats (Last 5 Games) ───────────────────────────────
     st.subheader("Player Roles & Stats (Last 5 Games)")
-    st.caption("Per-player aggregates · Corners/FKs = set-piece count · Rates are per game")
+    st.caption("Per-player aggregates · Crn Tkn / FK Tkn = total corners & free kicks taken · /G = per game")
 
     pr1, pr2 = st.columns(2)
     with pr1:
@@ -759,72 +759,67 @@ if home_events_5 and away_events_5 and home_tid and away_tid:
 
     # ── Corner Analysis ──────────────────────────────────────────────────
     st.subheader("Corner Analysis (Last 5 Games)")
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        h_all_shots = extract_shots(home_events_5)
-        h_corners = compute_corner_breakdown(home_events_5, home_tid,
-                                              h_all_shots)
-        if not h_corners.empty:
-            n_c = len(h_corners)
-            n_s = int(h_corners["had_shot"].sum())
-            n_g = int(h_corners["had_goal"].sum())
-            st.markdown(
-                f'<div style="text-align:center;padding:0.5rem;'
-                f'background:#1A1A2E;border-radius:8px;">'
-                f'<span style="color:{MU_RED};font-size:1.4rem;'
-                f'font-weight:700;">{n_c}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' corners &rarr; </span>'
-                f'<span style="color:{MU_GOLD};font-size:1.4rem;'
-                f'font-weight:700;">{n_s}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' shots &rarr; </span>'
-                f'<span style="color:#4CAF50;font-size:1.4rem;'
-                f'font-weight:700;">{n_g}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' goals</span></div>',
-                unsafe_allow_html=True,
-            )
-            plot_set_piece_map(
-                h_corners, title=f"{home_team} Corners (Last 5)",
-                color=MU_RED, highlight_col="had_shot",
-                highlight_color=MU_GOLD,
-                highlight_label="Shot", default_label="No shot",
-            )
+
+    # Compute corner-to-shot detail for both teams
+    h_all_shots = extract_shots(home_events_5)
+    h_corners_det, h_corner_shots = compute_corner_shot_detail(
+        home_events_5, home_tid, h_all_shots,
+    )
+    a_all_shots = extract_shots(away_events_5)
+    a_corners_det, a_corner_shots = compute_corner_shot_detail(
+        away_events_5, away_tid, a_all_shots,
+    )
+
+    # Funnel badges
+    def _render_funnel(corners_df, shots_df, primary_color):
+        n_c = len(corners_df)
+        n_s = len(shots_df)
+        n_g = int((shots_df["outcome"] == "Goal").sum()) if not shots_df.empty else 0
+        total_xg = float(shots_df["xg"].sum()) if not shots_df.empty else 0.0
+        st.markdown(
+            f'<div style="text-align:center;padding:0.5rem;'
+            f'background:#1A1A2E;border-radius:8px;">'
+            f'<span style="color:{primary_color};font-size:1.4rem;'
+            f'font-weight:700;">{n_c}</span>'
+            f'<span style="color:#888;font-size:0.8rem;"> corners &rarr; </span>'
+            f'<span style="color:{MU_GOLD};font-size:1.4rem;'
+            f'font-weight:700;">{n_s}</span>'
+            f'<span style="color:#888;font-size:0.8rem;"> shots &rarr; </span>'
+            f'<span style="color:#4CAF50;font-size:1.4rem;'
+            f'font-weight:700;">{n_g}</span>'
+            f'<span style="color:#888;font-size:0.8rem;"> goals</span>'
+            f'<span style="color:#888;font-size:0.8rem;"> · </span>'
+            f'<span style="color:#FF9800;font-size:1.1rem;'
+            f'font-weight:600;">{total_xg:.2f}</span>'
+            f'<span style="color:#888;font-size:0.8rem;"> xG</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        if not h_corners_det.empty:
+            _render_funnel(h_corners_det, h_corner_shots, MU_RED)
         else:
             st.info(f"No corner data for {home_team}.")
-    with cc2:
-        a_all_shots = extract_shots(away_events_5)
-        a_corners = compute_corner_breakdown(away_events_5, away_tid,
-                                              a_all_shots)
-        if not a_corners.empty:
-            n_c = len(a_corners)
-            n_s = int(a_corners["had_shot"].sum())
-            n_g = int(a_corners["had_goal"].sum())
-            st.markdown(
-                f'<div style="text-align:center;padding:0.5rem;'
-                f'background:#1A1A2E;border-radius:8px;">'
-                f'<span style="color:#42A5F5;font-size:1.4rem;'
-                f'font-weight:700;">{n_c}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' corners &rarr; </span>'
-                f'<span style="color:{MU_GOLD};font-size:1.4rem;'
-                f'font-weight:700;">{n_s}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' shots &rarr; </span>'
-                f'<span style="color:#4CAF50;font-size:1.4rem;'
-                f'font-weight:700;">{n_g}</span>'
-                f'<span style="color:#888;font-size:0.8rem;">'
-                f' goals</span></div>',
-                unsafe_allow_html=True,
-            )
-            plot_set_piece_map(
-                a_corners, title=f"{away_team} Corners (Last 5)",
-                color="#42A5F5", highlight_col="had_shot",
-                highlight_color=MU_GOLD,
-                highlight_label="Shot", default_label="No shot",
-            )
+    with fc2:
+        if not a_corners_det.empty:
+            _render_funnel(a_corners_det, a_corner_shots, "#42A5F5")
         else:
             st.info(f"No corner data for {away_team}.")
+
+    # Shot location panels (Left Corner | Right Corner)
+    cp1, cp2 = st.columns(2)
+    with cp1:
+        plot_corner_shot_panels(
+            h_corners_det, h_corner_shots,
+            team_name=home_team, team_color=MU_RED,
+            n_matches=home_n,
+        )
+    with cp2:
+        plot_corner_shot_panels(
+            a_corners_det, a_corner_shots,
+            team_name=away_team, team_color="#42A5F5",
+            n_matches=away_n,
+        )
 else:
     st.info("Insufficient match data for tactical heatmaps.")

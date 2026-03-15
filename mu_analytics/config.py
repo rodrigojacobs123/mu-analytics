@@ -4,10 +4,7 @@ import os
 from pathlib import Path
 
 # ── Data paths ──────────────────────────────────────────────────────────────
-# On Streamlit Cloud the data lives in <repo>/data/ next to mu_analytics/.
-# Locally you can override with the MU_DATA_ROOT env var.
-_DEFAULT_DATA = Path(__file__).resolve().parent.parent / "data"
-DATA_ROOT = Path(os.environ.get("MU_DATA_ROOT", str(_DEFAULT_DATA)))
+DATA_ROOT = Path(os.environ.get("MU_DATA_ROOT", "/Users/rodrigojacobs/Downloads/europa"))
 DEFAULT_LEAGUE = "England_Premier_League"
 DEFAULT_SEASON = "2025-2026"
 
@@ -85,7 +82,7 @@ QUAL_PLAYER_IDS = 30
 QUAL_SHIRT_NUMBERS = 59
 QUAL_PLAYER_POSITION = 131
 QUAL_ASSIST = 76
-QUAL_PENALTY = 22
+QUAL_PENALTY = 9           # qualifier 9 = penalty kick (NOT Q22, which = "inside penalty area")
 QUAL_OWN_GOAL = 28
 QUAL_HEAD = 15
 QUAL_RIGHT_FOOT = 72

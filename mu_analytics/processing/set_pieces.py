@@ -120,8 +120,8 @@ def compute_set_piece_stats(
     n_corners_h = len(corners_h)
     n_corners_a = len(corners_a)
 
-    # Penalties: only count penalty GOALS (qualifier 22 on goal events).
-    # Qualifier 22 on non-goal shots means "inside penalty area", not penalty kick.
+    # Penalties: qualifier 9 = penalty kick.
+    # (Qualifier 22 means "inside penalty area" on ALL shot types — not penalty kick.)
     from data.event_parser import _has_qualifier
     from config import QUAL_PENALTY, EVENT_GOAL
     pen_h = sum(1 for e in events if e.get("typeId") == EVENT_GOAL
@@ -207,6 +207,134 @@ def compute_corner_breakdown(
         })
 
     return pd.DataFrame(rows)
+
+
+def compute_corner_shot_detail(
+    events: list[dict],
+    team_id: str,
+    all_shots: pd.DataFrame | None = None,
+    period: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-corner breakdown with full shot detail linked by time window.
+
+    Returns
+    -------
+    corners_df : DataFrame
+        One row per corner with corner_side, delivery info, and position.
+    shots_df : DataFrame
+        One row per shot linked to a corner, with corner_side inherited
+        from the originating corner plus full shot detail (x, y, xg, outcome).
+    """
+    corners = _filter_period(extract_corners(events, team_id), period)
+    if corners.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if all_shots is None:
+        all_shots = _filter_period(extract_shots(events), period)
+    else:
+        all_shots = _filter_period(all_shots, period)
+
+    # Build corners_df with corner_side
+    corner_rows = []
+    corner_times = []  # parallel list for fast lookup
+    for i, c in corners.iterrows():
+        side = "Left Corner" if c["y"] < 50 else "Right Corner"
+        raw = c["delivery_type"]
+        ct = _to_total_seconds(c["minute"], c["second"], c.get("period", 1))
+        corner_times.append(ct)
+        corner_rows.append({
+            "minute": c["minute"],
+            "second": c["second"],
+            "delivery_type": raw,
+            "delivery_label": CORNER_TYPE_LABELS.get(raw, raw),
+            "corner_side": side,
+            "x": c["x"],
+            "y": c["y"],
+            "player_name": c.get("player_name", ""),
+            "period": c.get("period", 1),
+        })
+    corners_df = pd.DataFrame(corner_rows)
+
+    # ── Find delivery destinations (first touch after each corner) ──
+    # Opta corners have no end_x/end_y, so we approximate the delivery
+    # location by finding the first non-flag event after each corner.
+    # Skip: mirror corner events (typeId=6), non-touch events, and events
+    # at any corner flag position (delivery kicks from the flag).
+    _SKIP_TYPES = {6, 30, 32, 34, 40, 17, 18, 19, 20}
+    _DELIVERY_SCAN = 60  # wider than shot window (Opta time = award, not kick)
+    delivery_map: dict[tuple, tuple] = {}
+    for ev_idx, e in enumerate(events):
+        if e.get("typeId") != EVENT_CORNER or e.get("contestantId") != team_id:
+            continue
+        c_min = int(e.get("timeMin", 0))
+        c_sec = int(e.get("timeSec", 0))
+        c_per = int(e.get("periodId", 0))
+        if period is not None and c_per != period:
+            continue
+        c_t = _to_total_seconds(c_min, c_sec, c_per)
+        for j in range(ev_idx + 1, min(ev_idx + 80, len(events))):
+            nxt = events[j]
+            if nxt.get("typeId") in _SKIP_TYPES:
+                continue
+            nx, ny = float(nxt.get("x", 0)), float(nxt.get("y", 0))
+            if nx == 0 and ny == 0:
+                continue
+            gap = _to_total_seconds(
+                int(nxt.get("timeMin", 0)),
+                int(nxt.get("timeSec", 0)),
+                int(nxt.get("periodId", 0)),
+            ) - c_t
+            if gap > _DELIVERY_SCAN or gap < 0:
+                break
+            # Flip coordinates if from the opposing team
+            if nxt.get("contestantId", "") != team_id:
+                nx, ny = 100 - nx, 100 - ny
+            # Skip events at corner flag positions (delivery kicks)
+            if (nx < 5 or nx > 95) and (ny < 5 or ny > 95):
+                continue
+            delivery_map[(c_min, c_sec, c_per)] = (nx, ny)
+            break
+
+    del_x, del_y = [], []
+    for _, r in corners_df.iterrows():
+        dx, dy = delivery_map.get(
+            (r["minute"], r["second"], r["period"]), (None, None)
+        )
+        del_x.append(dx)
+        del_y.append(dy)
+    corners_df["delivery_x"] = del_x
+    corners_df["delivery_y"] = del_y
+
+    # Link shots → most recent preceding corner within window
+    team_shots = all_shots[all_shots["team_id"] == team_id] if not all_shots.empty else pd.DataFrame()
+    shot_rows = []
+    if not team_shots.empty and corner_times:
+        for _, s in team_shots.iterrows():
+            st_time = _to_total_seconds(s["minute"], s["second"], s.get("period", 1))
+            # Find most recent corner before this shot within window
+            best_idx = -1
+            best_gap = SET_PIECE_WINDOW_SECS + 1
+            for ci, ct in enumerate(corner_times):
+                gap = st_time - ct
+                if 0 < gap <= SET_PIECE_WINDOW_SECS and gap < best_gap:
+                    best_gap = gap
+                    best_idx = ci
+            if best_idx >= 0:
+                shot_rows.append({
+                    "corner_idx": best_idx,
+                    "corner_side": corner_rows[best_idx]["corner_side"],
+                    "minute": s["minute"],
+                    "second": s["second"],
+                    "x": s["x"],
+                    "y": s["y"],
+                    "xg": s.get("xg", 0.0),
+                    "outcome": s.get("outcome", ""),
+                    "body_part": s.get("body_part", ""),
+                    "period": s.get("period", 1),
+                })
+
+    shots_df = pd.DataFrame(shot_rows)
+    return corners_df, shots_df
 
 
 def compute_dangerous_fk_zones(

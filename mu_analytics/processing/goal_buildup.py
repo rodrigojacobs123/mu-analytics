@@ -29,6 +29,11 @@ def _get_qualifier(quals: list[dict], qid: int):
     return None
 
 
+def _has_qualifier(quals: list[dict], qid: int) -> bool:
+    """Check presence of a boolean-flag qualifier (no value attribute)."""
+    return any(q.get("qualifierId") == qid for q in quals)
+
+
 def _event_time_secs(e: dict) -> int:
     return int(e.get("timeMin", 0)) * 60 + int(e.get("timeSec", 0))
 
@@ -56,12 +61,13 @@ def extract_goal_buildups(events: list[dict]) -> list[dict]:
         goal_time = _event_time_secs(goal_ev)
 
         # Quick classification for penalties and own goals
-        if _get_qualifier(quals, QUAL_PENALTY):
+        # Use _has_qualifier (presence check) — these are boolean flags with no value.
+        if _has_qualifier(quals, QUAL_PENALTY):
             results.append(_make_result(
                 goal_ev, "PENALTY", [_event_to_row(goal_ev)], 0,
             ))
             continue
-        if _get_qualifier(quals, QUAL_OWN_GOAL):
+        if _has_qualifier(quals, QUAL_OWN_GOAL):
             results.append(_make_result(
                 goal_ev, "OWN_GOAL", [_event_to_row(goal_ev)], 0,
             ))
