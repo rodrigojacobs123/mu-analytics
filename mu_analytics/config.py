@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 
 # ── Data paths ──────────────────────────────────────────────────────────────
-DATA_ROOT = Path(os.environ.get("MU_DATA_ROOT", "/Users/rodrigojacobs/Downloads/europa"))
+# Default: repo_root/data  (works on Streamlit Cloud and locally from the deploy repo)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("MU_DATA_ROOT", str(_REPO_ROOT / "data")))
 DEFAULT_LEAGUE = "England_Premier_League"
 DEFAULT_SEASON = "2025-2026"
 
